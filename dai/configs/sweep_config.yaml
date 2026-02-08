@@ -1,0 +1,56 @@
+# WandB Sweep Configuration for LightStereo-S Hyperparameter Optimization
+# 
+# Usage:
+#   1. Initialize sweep: wandb sweep dai/configs/sweep_config.yaml
+#   2. Run agents: wandb agent <sweep_id>
+#   3. Run multiple agents in parallel for faster sweeps
+#
+# Documentation: https://docs.wandb.ai/guides/sweeps
+
+program: dai/main.py
+method: grid  # Options: 'grid', 'random', 'bayes'
+project: lightstereo  # WandB project name
+entity: prudnikova-oleksandra-none # Your WandB username or team
+name: training_gt_002  # Sweep name (becomes the group name for all runs)
+
+# Metric to optimize
+metric:
+  name: val/epe  # Validation End-Point Error
+  goal: minimize
+
+# Early termination (optional)
+early_terminate:
+  type: hyperband
+  min_iter: 10  # Minimum epochs before termination
+  eta: 3
+  s: 2
+
+# Hyperparameters to search
+parameters:
+  # Base config file to use
+  config:
+    values: ['dai/configs/stereo_flow.yaml']
+  
+  # Learning rate search (log-uniform distribution)
+  optimization.optimizer.lr:
+    values: [0.0024, 0.0018, 0.001, 0.01, 0.0001]
+
+  optimization.scheduler.pct_start:
+    values: [0.01, 0.1, 0.05, 0.3]
+  
+  # Model architecture (optional - usually keep fixed)
+  # model.aggregation_blocks:
+  #   values: [[1, 2, 4], [2, 3, 5], [1, 3, 5]]
+  
+  # Fixed parameters (not searched)
+  optimization.num_epochs:
+    values: [90]
+
+# Command to run (optional - overrides program)
+# command:
+#   - ${env}
+#   - python
+#   - ${program}
+#   - --config
+#   - dai/configs/multi_dataset.yaml
+#   - ${args_no_hyphens}

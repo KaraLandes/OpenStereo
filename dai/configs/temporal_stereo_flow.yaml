@@ -1,0 +1,123 @@
+# Temporal Stereo Flow Configuration
+# Extends stereo_flow.yaml with temporal/sequential settings
+
+seed: 28
+
+datasets:
+  - name: sceneflow
+    root: ./src_data/sceneflow
+    subsets:
+      - monkaa
+      - driving
+      - flyingthings3d
+    pass_type: cleanpass
+    resolution: null
+    target_source: pseudo-foundationstereo #provided
+    return_right_disp: false
+    
+    # Sequential dataset settings (NEW)
+    sequential:
+      enabled: true
+      sequence_length: 8      # Number of frames per sequence
+      stride: 4               # Sliding window stride (50% overlap)
+      skip_incomplete: true   # Skip sequences shorter than sequence_length
+
+splitter:
+  train:
+    enabled: true
+    proportion: 0.7
+  val:
+    enabled: true
+    proportion: 0.15
+  test:
+    enabled: true
+    proportion: 0.15
+  seed: 28
+  strategy: stratified  # Preserves folder-based splits
+
+transforms:
+  train:
+    - {name: RandomCrop, size: [320, 736]}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  val:
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  test:
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+dataloader:
+  batch_size: 2  # REDUCED: Sequences are larger than single frames
+  num_workers: 12
+  shuffle: true
+  pin_memory: true
+  drop_last: true
+  persistent_workers: true
+  prefetch_factor: 12  # Reduced from 10 due to larger memory per batch
+
+# Model configuration (Temporal LightStereo)
+model:
+  name: TemporalLightStereo  # Use temporal model
+  variant: S
+  max_disp: 192
+  left_att: true
+  aggregation_blocks: [1, 2, 4]
+  expanse_ratio: 4
+  backbone: MobileNetv2
+  
+  # Temporal fusion settings (NEW)
+  temporal:
+    hidden_channels: 64      # Hidden state channels for GRU fusion
+    use_optical_flow: false  # Set true to enable flow-based warping
+
+# Training optimization
+optimization:
+  num_epochs: 90
+  executable_epochs: 90
+  amp: true
+  grad_clip_value: 0.1
+  accumulation_steps: 12  # Gradient accumulation: effective_batch_size = batch_size × accumulation_steps
+  
+  optimizer:
+    name: AdamW
+    lr: 0.0025  # Reduced from 0.0024 due to smaller batch size
+    weight_decay: 0.00001
+    eps: 0.00000001
+  
+  scheduler:
+    name: OneCycleLR
+    pct_start: 0.01
+    on_epoch: false
+
+# Loss function configuration
+loss:
+  loss_weights:
+    disp_pred: 1.0
+    disp_4: 0.3
+
+# Training mode (NEW)
+training:
+  mode: sequential_fused_features  # Triggers SequentialTrainer with feature fusion
+
+# Logging configuration
+logging:
+  wandb:
+    project: lightstereo
+    entity: null
+    run_name: null
+    group: null
+    tags: [sceneflow, temporal-lightstereo, state-fusion]
+  
+  log_interval: 50
+  save_interval: 10
+
+# Checkpoint saving
+checkpoints:
+  save_dir: src_data/temporal_lightstereo_training/testing
+  save_best: true
+  save_periodic: false
