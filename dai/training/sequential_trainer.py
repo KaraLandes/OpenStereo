@@ -158,12 +158,14 @@ class SequentialTrainer(DAITrainer):
             'EXPANSE_RATIO': model_config.get('expanse_ratio', 4),
             'BACKCONE': model_config.get('backbone', 'MobileNetv2'),
             # Temporal-specific configs
+            'TEMPORAL_FUSION_TYPE': model_config.get('temporal', {}).get('fusion_type', 'convolutional'),
             'TEMPORAL_HIDDEN_CHANNELS': model_config.get('temporal', {}).get('hidden_channels', 64),
-            'TEMPORAL_USE_FLOW': model_config.get('temporal', {}).get('use_optical_flow', False),
+            'USE_TEMPORAL_FUSION': model_config.get('temporal', {}).get('enabled', True),
         })
         
         model = TemporalLightStereo(model_cfg)
         logger.info(f"Built TemporalLightStereo model with config: {model_cfg}")
+        logger.info(f"Fusion type: {model_cfg.TEMPORAL_FUSION_TYPE}")
         
         return model
     
@@ -201,17 +203,9 @@ class SequentialTrainer(DAITrainer):
             sequence_length = len(sequence)
             batch_size = sequence[0]['left'].shape[0]
             
-            # Initialize with FoundationStereo disparity for frame 0
-            # This provides a strong prior for temporal fusion
-            first_frame = sequence[0]
-            if 'disparity_foundationstereo' in first_frame and first_frame['disparity_foundationstereo'] is not None:
-                prev_disparity = first_frame['disparity_foundationstereo'].to(self.device)
-            elif 'disparity' in first_frame and first_frame['disparity'] is not None:
-                prev_disparity = first_frame['disparity'].to(self.device)
-            else:
-                # Fallback: use zeros (no temporal information)
-                B, _, H, W = first_frame['left'].shape
-                prev_disparity = torch.zeros(B, 1, H, W, device=self.device)
+            # Initialize: no previous disparity for frame 0
+            prev_disparity = None
+            hidden_state = None
             
             # Accumulate loss over the sequence
             total_loss = 0.0
@@ -230,10 +224,10 @@ class SequentialTrainer(DAITrainer):
                     'right': right
                 }
                 
-                # Forward pass with previous disparity
-                # For frame 0: prev_disparity is FoundationStereo
-                # For frame t>0: prev_disparity is prediction from frame t-1
-                output = self.model(data, prev_disparity=prev_disparity)
+                # Forward pass with temporal context
+                # Frame 0: prev_disparity=None, hidden_state=None (no fusion)
+                # Frame t>0: prev_disparity from t-1, hidden_state from t-1
+                output = self.model(data, prev_disparity=prev_disparity, hidden_state=hidden_state)
                 
                 # Prepare data dict with ground truth for loss computation
                 data_with_gt = {
@@ -249,8 +243,9 @@ class SequentialTrainer(DAITrainer):
                 # Accumulate loss
                 total_loss += frame_loss
                 
-                # Update previous disparity for next frame
-                prev_disparity = output['disp_pred'].detach()  # Detach to prevent BPTT through all frames
+                # Update for next frame (NO DETACH - keep gradients!)
+                prev_disparity = output['disp_pred']
+                hidden_state = output.get('hidden_state', None)
             
             # Average loss over sequence
             avg_loss = total_loss / sequence_length
@@ -305,14 +300,18 @@ class SequentialTrainer(DAITrainer):
             if (batch_idx + 1) % log_interval == 0:
                 try:
                     import wandb
-                    wandb.log({
+                    log_dict = {
                         'train/loss': avg_loss.item() * self.accumulation_steps,
                         'train/epe': metrics['epe'],
                         'train/d1_all': metrics['d1_all'],
                         'train/lr': self.optimizer.param_groups[0]['lr'],
                         'epoch': epoch,
                         'step': self.global_step
-                    })
+                    }
+                    # Log fusion type for tracking
+                    if hasattr(self.model, 'fusion_type'):
+                        log_dict['model/fusion_type'] = self.model.fusion_type
+                    wandb.log(log_dict)
                 except:
                     pass  # WandB not available or not initialized
             
@@ -370,15 +369,9 @@ class SequentialTrainer(DAITrainer):
             sequence_length = len(sequence)
             batch_size = sequence[0]['left'].shape[0]
             
-            # Initialize with FoundationStereo disparity for frame 0
-            first_frame = sequence[0]
-            if 'disparity_foundationstereo' in first_frame and first_frame['disparity_foundationstereo'] is not None:
-                prev_disparity = first_frame['disparity_foundationstereo'].to(self.device)
-            elif 'disparity' in first_frame and first_frame['disparity'] is not None:
-                prev_disparity = first_frame['disparity'].to(self.device)
-            else:
-                B, _, H, W = first_frame['left'].shape
-                prev_disparity = torch.zeros(B, 1, H, W, device=self.device)
+            # Initialize: no previous disparity for frame 0
+            prev_disparity = None
+            hidden_state = None
             
             total_loss = 0.0
             
@@ -394,9 +387,10 @@ class SequentialTrainer(DAITrainer):
                     'right': right
                 }
                 
-                output = self.model(data, prev_disparity=prev_disparity)
+                output = self.model(data, prev_disparity=prev_disparity, hidden_state=hidden_state)
                 disp_pred = output['disp_pred']
-                prev_disparity = disp_pred  # No detach in validation
+                prev_disparity = disp_pred
+                hidden_state = output.get('hidden_state', None)
                 
                 # Prepare data dict with ground truth for loss computation
                 data_with_gt = {

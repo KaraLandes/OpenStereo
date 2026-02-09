@@ -70,10 +70,14 @@ model:
   expanse_ratio: 4
   backbone: MobileNetv2
   
-  # Temporal fusion settings (NEW)
+  # Temporal fusion settings
   temporal:
-    hidden_channels: 64      # Hidden state channels for GRU fusion
-    use_optical_flow: false  # Set true to enable flow-based warping
+    enabled: true                    # Enable/disable temporal fusion
+    fusion_type: convolutional       # Fusion strategy: 'convolutional', 'recurrent', or 'residual'
+                                     # - convolutional: Confidence-weighted blending (simple, stable)
+                                     # - recurrent: ConvGRU-based temporal memory (complex, stateful)
+                                     # - residual: Predict disparity delta/correction (smooth motion)
+    hidden_channels: 64              # Hidden state channels for fusion networks
 
 # Training optimization
 optimization:

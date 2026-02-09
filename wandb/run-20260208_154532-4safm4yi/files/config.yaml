@@ -1,0 +1,201 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            gqkx8yfl36b4ddxpfvhnxppaxyr1jxlg:
+                args:
+                    - --config
+                    - dai/configs/temporal_stereo_flow.yaml
+                codePath: dai/main.py
+                codePathLocal: dai/main.py
+                cpu_count: 6
+                cpu_count_logical: 12
+                cudaVersion: "12.9"
+                disk:
+                    /:
+                        total: "195722883072"
+                        used: "40051163136"
+                email: prudnikova.oleksandra@gmail.com
+                executable: /home/karalandes/Documents/Juliy/StereoCam/OpenStereo/.venv/bin/python
+                git:
+                    commit: 809f882ff3b9b833da19392d4381fb1713e2b2b9
+                    remote: https://github.com/KaraLandes/OpenStereo.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-ad307fbc-2ef4-3cf5-26da-c1ecacc89df7
+                host: boto-MS-7C91
+                memory:
+                    total: "33578168320"
+                os: Linux-6.14.0-29-generic-x86_64-with-glibc2.39
+                program: /home/karalandes/Documents/Juliy/StereoCam/OpenStereo/dai/main.py
+                python: CPython 3.12.3
+                root: /home/karalandes/Documents/Juliy/StereoCam/OpenStereo
+                startedAt: "2026-02-08T14:45:32.365662Z"
+                writerId: gqkx8yfl36b4ddxpfvhnxppaxyr1jxlg
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+                - 63
+            "2":
+                - 1
+                - 41
+                - 49
+                - 63
+            "3":
+                - 15
+                - 16
+            "4": 3.12.3
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
+checkpoints:
+    value:
+        save_best: true
+        save_dir: src_data/temporal_lightstereo_training/testing
+        save_periodic: false
+dataloader:
+    value:
+        batch_size: 2
+        drop_last: true
+        num_workers: 12
+        persistent_workers: true
+        pin_memory: true
+        prefetch_factor: 12
+        shuffle: true
+datasets:
+    value:
+        - name: sceneflow
+          pass_type: cleanpass
+          resolution: null
+          return_right_disp: false
+          root: ./src_data/sceneflow
+          sequential:
+            enabled: true
+            sequence_length: 8
+            skip_incomplete: true
+            stride: 4
+          subsets:
+            - monkaa
+            - driving
+            - flyingthings3d
+          target_source: pseudo-foundationstereo
+logging:
+    value:
+        log_interval: 50
+        save_interval: 10
+        wandb:
+            entity: null
+            group: null
+            project: lightstereo
+            run_name: null
+            tags:
+                - sceneflow
+                - temporal-lightstereo
+                - state-fusion
+loss:
+    value:
+        loss_weights:
+            disp_4: 0.3
+            disp_pred: 1
+        max_disp: 192
+model:
+    value:
+        aggregation_blocks:
+            - 1
+            - 2
+            - 4
+        backbone: MobileNetv2
+        expanse_ratio: 4
+        left_att: true
+        max_disp: 192
+        name: TemporalLightStereo
+        temporal:
+            hidden_channels: 64
+            use_optical_flow: false
+        variant: S
+optimization:
+    value:
+        accumulation_steps: 12
+        amp: true
+        executable_epochs: 90
+        grad_clip_value: 0.1
+        num_epochs: 90
+        optimizer:
+            eps: 1e-08
+            lr: 0.0025
+            name: AdamW
+            weight_decay: 1e-05
+        scheduler:
+            name: OneCycleLR
+            on_epoch: false
+            pct_start: 0.01
+seed:
+    value: 28
+splitter:
+    value:
+        seed: 28
+        strategy: stratified
+        test:
+            enabled: true
+            proportion: 0.15
+        train:
+            enabled: true
+            proportion: 0.7
+        val:
+            enabled: true
+            proportion: 0.15
+training:
+    value:
+        mode: sequential_fused_features
+transforms:
+    value:
+        test:
+            - divisor: 32
+              name: RightBottomPad
+            - name: ToTensor
+            - mean:
+                - 0.485
+                - 0.456
+                - 0.406
+              name: NormalizeImage
+              std:
+                - 0.229
+                - 0.224
+                - 0.225
+        train:
+            - name: RandomCrop
+              size:
+                - 320
+                - 736
+            - name: ToTensor
+            - mean:
+                - 0.485
+                - 0.456
+                - 0.406
+              name: NormalizeImage
+              std:
+                - 0.229
+                - 0.224
+                - 0.225
+        val:
+            - divisor: 32
+              name: RightBottomPad
+            - name: ToTensor
+            - mean:
+                - 0.485
+                - 0.456
+                - 0.406
+              name: NormalizeImage
+              std:
+                - 0.229
+                - 0.224
+                - 0.225

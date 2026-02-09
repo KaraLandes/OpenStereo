@@ -1,10 +1,92 @@
-tqdm
-easydict
-tensorboard
-six
-pyyaml
-opencv-python
+# ============================================================================
+# OpenStereo Requirements - Comprehensive Version for GCP Deployment
+# ============================================================================
+# Generated: 2026-02-08
+# Python Version: 3.8+
+# CUDA Version: 11.3+ (for GPU support)
+# ============================================================================
+
+# Core Deep Learning Frameworks
+# ----------------------------------------------------------------------------
+torch==1.10.2
+torchvision==0.11.3
+# For CUDA 11.3 support, use:
+# torch==1.10.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+# torchvision==0.11.3+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+
+# Computer Vision & Image Processing
+# ----------------------------------------------------------------------------
+opencv-python==4.6.0.66
+Pillow==9.3.0
+scikit-image==0.19.3
+imageio==2.22.4
+
+# Scientific Computing
+# ----------------------------------------------------------------------------
+numpy==1.23.5
+h5py==3.7.0
+
+# Deep Learning Utilities
+# ----------------------------------------------------------------------------
 timm==0.4.12
-scikit-image
-thop
-matplotlib
+thop==0.1.1.post2209072238
+
+# Configuration & Utilities
+# ----------------------------------------------------------------------------
+easydict==1.10
+PyYAML==6.0
+omegaconf==2.3.0
+
+# Progress & Logging
+# ----------------------------------------------------------------------------
+tqdm==4.64.1
+tensorboard==2.11.0
+wandb==0.13.5
+
+# Data Processing & Analysis
+# ----------------------------------------------------------------------------
+pandas==1.5.2
+
+# Deployment & Export
+# ----------------------------------------------------------------------------
+onnx==1.12.0
+onnxruntime==1.13.1
+
+# Compatibility
+# ----------------------------------------------------------------------------
+six==1.16.0
+
+# Visualization
+# ----------------------------------------------------------------------------
+matplotlib==3.6.2
+
+# ============================================================================
+# Optional Dependencies (uncomment if needed)
+# ============================================================================
+# For mixed precision training on older PyTorch versions:
+# apex @ git+https://github.com/NVIDIA/apex.git
+
+# For advanced augmentations:
+# albumentations==1.3.0
+
+# For distributed training utilities:
+# accelerate==0.15.0
+
+# ============================================================================
+# Development Dependencies (optional)
+# ============================================================================
+# pytest==7.2.0
+# pytest-cov==4.0.0
+# black==22.10.0
+# flake8==6.0.0
+# isort==5.11.4
+
+# ============================================================================
+# Notes for GCP Deployment:
+# ============================================================================
+# 1. For GPU instances, uncomment the CUDA-specific torch/torchvision lines
+# 2. Ensure CUDA toolkit 11.3+ is installed on the GCP instance
+# 3. For CPU-only deployment, use the default torch/torchvision versions
+# 4. Consider using Docker for better reproducibility
+# 5. Test environment with: pip install -r requirements.txt
+# ============================================================================
