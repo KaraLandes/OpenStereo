@@ -19,7 +19,7 @@ class LightStereo(nn.Module):
         self.backbone = Backbone(cfgs.get('BACKCONE', 'MobileNetv2'))
 
         # aggregation
-        self.cost_agg = Aggregation(in_channels=48,
+        self.cost_agg = Aggregation(in_channels=self.max_disp // 4,
                                     left_att=self.left_att,
                                     blocks=cfgs.AGGREGATION_BLOCKS,
                                     expanse_ratio=cfgs.EXPANSE_RATIO,

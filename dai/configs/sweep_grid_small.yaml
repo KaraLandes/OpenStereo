@@ -1,0 +1,57 @@
+# WandB Grid Search Sweep - SMALL VERSION for Quick Testing
+# Reduced search space for faster experimentation
+#
+# Usage:
+#   1. Initialize: wandb sweep dai/configs/sweep_grid_small.yaml
+#   2. Run agent: wandb agent <sweep_id>
+
+program: dai/main.py
+method: grid
+project: lightstereo
+name: training_classic_03
+run_name: null  # Set to null for auto-generated names
+
+metric:
+  name: val/epe
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  eta: 3
+  s: 2
+
+parameters:
+  config:
+    values: ['dai/configs/stereo_flow.yaml']
+  
+  # Only 2 batch sizes
+  dataloader.batch_size:
+    values: [24, 48]
+  
+  # Only 2 learning rates
+  optimization.optimizer.lr:
+    values: [0.0012, 0.0024, 0.0048]
+  
+  # Only 2 warmup values
+  optimization.scheduler.pct_start:
+    values: [0.1, 0.05, 0.01]
+  
+  optimization.num_epochs:
+    values: [90]
+  
+  optimization.executable_epochs:
+    values: [30]
+  
+  optimization.scheduler.name:
+    values: ['OneCycleLR']
+
+  logging.save_interval:
+    values: [29]
+  
+  logging.wandb.group:
+    values: ['training_classic_03']
+
+# Total combinations: 2 × 2 × 2 = 8 runs
+# Estimated time: ~8 runs × 8-12 hours = 3-4 days sequential
+# With 2 parallel agents: ~1.5-2 days

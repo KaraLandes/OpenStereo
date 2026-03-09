@@ -1,0 +1,49 @@
+# WandB Grid Search - Compare Different LR Schedulers
+# Tests OneCycleLR vs CosineAnnealingLR vs StepLR
+#
+# Usage:
+#   1. Initialize: wandb sweep dai/configs/sweep_schedulers.yaml
+#   2. Run agent: wandb agent <sweep_id>
+
+program: dai/main.py
+method: grid
+project: lightstereo
+name: scheduler_comparison
+
+metric:
+  name: val/epe
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15
+  eta: 3
+  s: 2
+
+parameters:
+  config:
+    values: ['dai/configs/stereo_flow.yaml']
+  
+  # Fixed batch size and LR
+  dataloader.batch_size:
+    values: [24]
+  
+  optimization.optimizer.lr:
+    values: [0.0024]
+  
+  # Compare different schedulers
+  optimization.scheduler.name:
+    values: ['OneCycleLR', 'CosineAnnealingLR', 'StepLR']
+  
+  # OneCycleLR specific parameter
+  optimization.scheduler.pct_start:
+    values: [0.01, 0.05, 0.1]
+  
+  optimization.num_epochs:
+    values: [90]
+  
+  optimization.executable_epochs:
+    values: [90]
+
+# Total combinations: 3 schedulers × 3 pct_start = 9 runs
+# Note: pct_start only affects OneCycleLR, ignored by others

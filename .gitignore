@@ -9,3 +9,6 @@ cfgs/foundationstereo/fstereo_combine.yaml
 
 cpp_repo
 src_data
+src_lightstereo_training.tar
+.venv
+wandb

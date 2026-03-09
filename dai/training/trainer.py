@@ -267,12 +267,21 @@ class DAITrainer:
         
         wandb_config = self.config.get('logging', {}).get('wandb', {})
         
+        # Generate dynamic run name from hyperparameters if not explicitly set
+        run_name = wandb_config.get('run_name', None)
+        if run_name is None:
+            # Auto-generate name from key hyperparameters
+            batch_size = self.config.get('dataloader', {}).get('batch_size', 'unk')
+            lr = self.config.get('optimization', {}).get('optimizer', {}).get('lr', 'unk')
+            pct_start = self.config.get('optimization', {}).get('scheduler', {}).get('pct_start', 'unk')
+            run_name = f"bs{batch_size}_lr{lr}_pct{pct_start}"
+        
         # Initialize WandB run
         # Group will be set by sweep agent or manually
         wandb.init(
             project=wandb_config.get('project', 'lightstereo-training'),
             entity=wandb_config.get('entity', None),
-            name=wandb_config.get('run_name', None),
+            name=run_name,
             group=wandb_config.get('group', None),  # For sweep grouping
             config=self.config,
             tags=wandb_config.get('tags', []),
@@ -308,42 +317,42 @@ class DAITrainer:
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
         
         # Timing instrumentation (only for first 100 iterations)
-        import time
-        if not hasattr(self, '_timing_done'):
-            self._timing_done = False
+        # import time
+        # if not hasattr(self, '_timing_done'):
+        #     self._timing_done = False
         
         for batch_idx, batch in enumerate(pbar):
-            enable_timing = batch_idx < 100 if hasattr(self, '_timing_done') and not self._timing_done else True
+            # enable_timing = batch_idx < 100 if hasattr(self, '_timing_done') and not self._timing_done else True
             
-            batch_ready_time = time.time()
-            iter_start = time.time() if enable_timing and batch_idx < 100 else None
+            # batch_ready_time = time.time()
+            # iter_start = time.time() if enable_timing and batch_idx < 100 else None
             
-            # Measure data loading wait time (time between iterations)
-            if batch_idx > 0 and iter_start:
-                data_wait_time = batch_ready_time - prev_iter_end
-            else:
-                data_wait_time = 0
+            # # Measure data loading wait time (time between iterations)
+            # if batch_idx > 0 and iter_start:
+            #     data_wait_time = batch_ready_time - prev_iter_end
+            # else:
+            #     data_wait_time = 0
             
             # Move batch to device
-            t0 = time.time() if iter_start else None
+            # t0 = time.time() if iter_start else None
             batch = {k: v.to(self.device) if torch.is_tensor(v) else v 
                     for k, v in batch.items()}
-            if t0:
-                data_transfer_time = time.time() - t0
+            # if t0:
+            #     data_transfer_time = time.time() - t0
             
             # Forward pass with mixed precision
-            t1 = time.time() if iter_start else None
+            # t1 = time.time() if iter_start else None
             with autocast('cuda', enabled=self.use_amp):
                 model_output = self.model(batch)
                 loss, loss_dict = self.loss_fn(model_output, batch)
                 
                 # Scale loss by accumulation steps for correct gradient magnitude
                 loss = loss / self.accumulation_steps
-            if t1:
-                forward_time = time.time() - t1
+            # if t1:
+            #     forward_time = time.time() - t1
             
             # Backward pass
-            t2 = time.time() if iter_start else None
+            # t2 = time.time() if iter_start else None
             self.scaler.scale(loss).backward()
             
             # Only update weights every accumulation_steps
@@ -363,10 +372,17 @@ class DAITrainer:
                     sched_config = self.config.get('optimization', {}).get('scheduler', {})
                     if not sched_config.get('on_epoch', False):
                         self.scheduler.step()
+                
+                # LR tracking: Log every 50 steps and at key warmup milestones
+                current_lr = self.optimizer.param_groups[0]['lr']
+                if (self.global_step % 50 == 0 or 
+                    self.global_step < 10 or 
+                    self.global_step in [1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1179, 1180]):
+                    logger.info(f"[LR] Step {self.global_step}, LR: {current_lr:.8f}")
             
-            if t2:
-                backward_time = time.time() - t2 - optim_time if 'optim_time' in locals() else 0
-                optim_time = time.time() - t2
+            # if t2:
+            #     backward_time = time.time() - t2 - optim_time if 'optim_time' in locals() else 0
+            #     optim_time = time.time() - t2
             
             # Accumulate loss (detach to prevent memory leak)
             # Note: loss is already scaled by accumulation_steps, so multiply back for logging
@@ -379,7 +395,7 @@ class DAITrainer:
             # Compute metrics only at log intervals (expensive operation)
             log_interval = self.config.get('logging', {}).get('log_interval', 10)
             if batch_idx % log_interval == 0:
-                t4 = time.time() if iter_start else None
+                # t4 = time.time() if iter_start else None
                 with torch.no_grad():
                     metrics = self.metrics.compute_all_metrics(
                         model_output['disp_pred'],
@@ -387,8 +403,8 @@ class DAITrainer:
                         batch['valid_mask'],
                         max_disp=self.config.get('model', {}).get('max_disp', 192)
                     )
-                if t4:
-                    metrics_time = time.time() - t4
+                # if t4:
+                #     metrics_time = time.time() - t4
                 
                 # Accumulate metrics (already scalars from metrics computation)
                 for key in ['epe', 'd1_all', 'd1_bg', 'd1_fg']:
@@ -418,25 +434,25 @@ class DAITrainer:
                 # Just update progress bar with loss
                 pbar.set_postfix({'loss': f"{loss_dict['loss_total']:.4f}"})
             
-            # Log timing breakdown for first 100 iterations
-            if iter_start and batch_idx < 100:
-                total_time = time.time() - iter_start
-                logger.info(f"\n⏱️  Iteration {batch_idx} timing breakdown:")
-                if batch_idx > 0:
-                    logger.info(f"  Data wait:     {data_wait_time*1000:.1f}ms ⚠️ (DataLoader delay)")
-                logger.info(f"  Data transfer: {data_transfer_time*1000:.1f}ms")
-                logger.info(f"  Forward pass:  {forward_time*1000:.1f}ms")
-                logger.info(f"  Backward pass: {backward_time*1000:.1f}ms")
-                logger.info(f"  Optimizer:     {optim_time*1000:.1f}ms")
-                if batch_idx % log_interval == 0:
-                    logger.info(f"  Metrics:       {metrics_time*1000:.1f}ms")
-                logger.info(f"  TOTAL:         {total_time*1000:.1f}ms ({total_time:.3f}s)")
-                if batch_idx == 99:
-                    self._timing_done = True
+            # # Log timing breakdown for first 100 iterations
+            # if iter_start and batch_idx < 100:
+            #     total_time = time.time() - iter_start
+            #     logger.info(f"\n⏱️  Iteration {batch_idx} timing breakdown:")
+            #     if batch_idx > 0:
+            #         logger.info(f"  Data wait:     {data_wait_time*1000:.1f}ms ⚠️ (DataLoader delay)")
+            #     logger.info(f"  Data transfer: {data_transfer_time*1000:.1f}ms")
+            #     logger.info(f"  Forward pass:  {forward_time*1000:.1f}ms")
+            #     logger.info(f"  Backward pass: {backward_time*1000:.1f}ms")
+            #     logger.info(f"  Optimizer:     {optim_time*1000:.1f}ms")
+            #     if batch_idx % log_interval == 0:
+            #         logger.info(f"  Metrics:       {metrics_time*1000:.1f}ms")
+            #     logger.info(f"  TOTAL:         {total_time*1000:.1f}ms ({total_time:.3f}s)")
+            #     if batch_idx == 99:
+            #         self._timing_done = True
             
-            # Store end time for next iteration's wait calculation
-            if iter_start:
-                prev_iter_end = time.time()
+            # # Store end time for next iteration's wait calculation
+            # if iter_start:
+            #     prev_iter_end = time.time()
             
             # Periodic CUDA cache clearing to prevent memory fragmentation
             if batch_idx % 100 == 0 and torch.cuda.is_available():
