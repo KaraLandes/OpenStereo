@@ -59,6 +59,15 @@ class SupervisedLoss(nn.Module):
         # Create mask: valid pixels within disparity range
         mask = valid_mask & (disp_gt < self.max_disp) & (disp_gt > 0)
         
+        # Guard against empty mask (prevents NaN from mean() on empty tensors)
+        if mask.sum() == 0:
+            logger.warning("Empty loss mask detected - skipping batch")
+            return torch.tensor(0.0, device=disp_gt.device, requires_grad=True), {
+                'loss_total': 0.0,
+                'loss_disp_pred': 0.0,
+                'loss_disp_4': 0.0
+            }
+        
         total_loss = 0.0
         loss_dict = {}
         

@@ -379,16 +379,31 @@ class DAITrainer:
             # if t1:
             #     forward_time = time.time() - t1
             
+            # NaN detection: Check loss before backward pass
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.error(f"NaN/Inf loss detected at epoch {epoch}, batch {batch_idx}")
+                logger.error(f"Loss dict: {loss_dict}")
+                logger.error(f"Batch metadata: {batch.get('metadata', 'N/A')}")
+                # Skip this batch
+                continue
+            
             # Backward pass
             # t2 = time.time() if iter_start else None
             self.scaler.scale(loss).backward()
             
             # Only update weights every accumulation_steps
             if (batch_idx + 1) % self.accumulation_steps == 0:
-                # Gradient clipping
+                # Gradient clipping (using norm instead of value for better stability)
                 if self.grad_clip_value > 0:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_value_(self.model.parameters(), self.grad_clip_value)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    # NaN detection: Check gradient norm
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        logger.error(f"NaN/Inf gradient norm detected at epoch {epoch}, batch {batch_idx}")
+                        logger.error(f"Gradient norm: {grad_norm}")
+                        self.optimizer.zero_grad()
+                        continue
                 
                 # Optimizer step
                 self.scaler.step(self.optimizer)
