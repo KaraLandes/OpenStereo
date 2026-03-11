@@ -1,0 +1,123 @@
+# DAI Dataset Configuration - KITTI 2012 + 2015 Fine-tuning
+# Fine-tuning pre-trained SceneFlow model on both KITTI 2012 and KITTI 2015
+# Authors note: 500 epochs, batch size 2, OneCycleLR, max lr 0.0002
+
+seed: 28
+
+datasets:
+  - name: kitti12
+    root: ./src_data/kitti12
+    split: training
+    resolution: null
+    target_source: provided
+    return_right_disp: false
+
+  - name: kitti15
+    root: ./src_data/kitti15
+    split: training
+    resolution: null
+    target_source: provided
+    return_right_disp: false
+
+splitter:
+  train:
+    enabled: true
+    proportion: 0.9
+  val:
+    enabled: true
+    proportion: 0.1
+  test:
+    enabled: false
+    proportion: 0.0
+  seed: 42
+  strategy: random
+
+transforms:
+  train:
+    - {name: RandomCrop, size: [320, 736]}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  val:
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  test:
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+dataloader:
+  batch_size: 2
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  drop_last: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+# Model configuration
+model:
+  name: LightStereo
+  variant: S
+  max_disp: 192
+  left_att: true
+  aggregation_blocks: [1, 2, 4]
+  expanse_ratio: 4
+  backbone: MobileNetv2
+  freeze_backbone: true  # Freeze MobileNet backbone (only train stereo head)
+
+# Training optimization
+optimization:
+  num_epochs: 500
+  executable_epochs: 500
+  amp: true
+  grad_clip_value: 0.1
+  accumulation_steps: 1
+  
+  optimizer:
+    name: AdamW
+    lr: 0.0002
+    weight_decay: 0.00001
+    eps: 0.00000001
+  
+  scheduler:
+    name: OneCycleLR
+    pct_start: 0.01
+    on_epoch: false
+
+# Loss function configuration
+loss:
+  loss_weights:
+    disp_pred: 1.0
+    disp_4: 0.3
+    invalid_region_penalty: 0.5
+    invalid_region_threshold: 5.0
+
+# Training mode
+training:
+  mode: normal
+
+# Checkpoint to resume from (SceneFlow pre-trained)
+resume:
+  checkpoint: src_data/checkpoints/lightstereo/LightStereo-S-SceneFlow-General.pth
+  load_optimizer: false
+
+# Logging configuration
+logging:
+  wandb:
+    project: lightstereo
+    entity: null
+    run_name: kitti12_15_finetune_skypenalty
+    group: kitti_finetuning
+    tags: [kitti12, kitti15, finetune, combined]
+  
+  log_interval: 50
+  save_interval: 50
+
+# Checkpoint saving
+checkpoints:
+  save_dir: src_data/lightstereo_training/kitti12_15_finetune
+  save_best: true
+  save_periodic: true

@@ -22,6 +22,7 @@ from dai.datasets import (
     SceneFlowDataset,
     SequentialSceneFlowDataset,
     KITTI12Dataset,
+    KITTI15Dataset,
     CombinedStereoDataset,
     PostprocessingDataset,
     build_transforms,
@@ -160,6 +161,8 @@ class DAIPipeline:
                 return base_dataset
         elif dataset_name == 'kitti12':
             return KITTI12Dataset(samples, config, split)
+        elif dataset_name == 'kitti15':
+            return KITTI15Dataset(samples, config, split)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     

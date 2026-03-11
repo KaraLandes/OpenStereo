@@ -88,6 +88,7 @@ model:
   aggregation_blocks: [1, 2, 4]  # Number of blocks at each aggregation level
   expanse_ratio: 4  # Channel expansion ratio
   backbone: MobileNetv2  # Backbone architecture
+  freeze_backbone: true  # Freeze MobileNet backbone (only train stereo head)
 
 # Training optimization
 optimization:

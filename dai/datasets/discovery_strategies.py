@@ -268,3 +268,116 @@ class KITTI12Discovery(BaseDiscoveryStrategy):
                 return False
         
         return True
+
+
+@DatasetRegistry.register('kitti15')
+class KITTI15Discovery(BaseDiscoveryStrategy):
+    """
+    Discovery strategy for KITTI 2015 dataset.
+    
+    File structure:
+    root/
+        data_scene_flow/
+            training/
+                image_2/000000_10.png, 000000_11.png, ...
+                image_3/000000_10.png, 000000_11.png, ...
+                disp_noc_0/000000_10.png, ...
+                disp_occ_0/000000_10.png, ...
+            testing/
+                image_2/
+                image_3/
+    
+    Difference from KITTI12: Uses image_2/image_3 instead of colored_0/colored_1
+    """
+    
+    def discover_samples(self, root: Path, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Discover KITTI15 samples.
+        
+        Config keys:
+            - split: 'training' or 'testing'
+            - target_source: 'provided', 'pseudo-foundationstereo', or 'ssl'
+        """
+        root = Path(root)
+        split = config.get('split', 'training')
+        target_source = config.get('target_source', 'provided')
+        
+        samples = []
+        
+        # KITTI15 has data_scene_flow subdirectory
+        data_dir = root / 'data_scene_flow'
+        if not data_dir.exists():
+            # Try without subdirectory (alternative structure)
+            data_dir = root
+        
+        split_dir = data_dir / split
+        if not split_dir.exists():
+            logger.warning(f"Split directory not found: {split_dir}")
+            return samples
+        
+        left_dir = split_dir / 'image_2'
+        right_dir = split_dir / 'image_3'
+        
+        if not left_dir.exists() or not right_dir.exists():
+            logger.warning(f"Image directories not found in {split_dir}")
+            return samples
+        
+        left_images = sorted(left_dir.glob('*_10.png'))
+        
+        for left_img in left_images:
+            frame_id = left_img.stem
+            right_img = right_dir / left_img.name
+            
+            if not right_img.exists():
+                continue
+            
+            # Check for ground truth disparity
+            if target_source == 'provided' and split == 'training':
+                disp_path = split_dir / 'disp_noc_0' / left_img.name
+                if not disp_path.exists():
+                    disp_path = split_dir / 'disp_occ_0' / left_img.name
+                if not disp_path.exists():
+                    continue
+            else:
+                disp_path = None
+            
+            # Check for pre-calculated FoundationStereo disparity
+            disp_foundationstereo_path = None
+            if target_source == 'pseudo-foundationstereo':
+                foundationstereo_dir = split_dir / 'disp_foundationstereo'
+                disp_foundationstereo_path = foundationstereo_dir / left_img.name
+                if not disp_foundationstereo_path.exists():
+                    disp_foundationstereo_path = None
+            
+            sample = {
+                'left': str(left_img),
+                'right': str(right_img),
+                'disparity': str(disp_path) if disp_path else None,
+                'disparity_foundationstereo': str(disp_foundationstereo_path) if disp_foundationstereo_path else None,
+                'metadata': {
+                    'dataset': 'kitti15',
+                    'split': split,
+                    'frame_id': frame_id,
+                }
+            }
+            
+            if self.validate_sample(sample):
+                samples.append(sample)
+        
+        logger.info(f"Discovered {len(samples)} KITTI15 samples")
+        return samples
+    
+    def validate_sample(self, sample: Dict[str, Any]) -> bool:
+        """Validate KITTI15 sample"""
+        left_path = Path(sample['left'])
+        right_path = Path(sample['right'])
+        
+        if not left_path.exists() or not right_path.exists():
+            return False
+        
+        if sample['disparity'] is not None:
+            disp_path = Path(sample['disparity'])
+            if not disp_path.exists():
+                return False
+        
+        return True

@@ -78,6 +78,9 @@ class DAITrainer:
         self.model = self._build_model()
         self.model = self.model.to(self.device)
         
+        # Freeze backbone if configured
+        self._freeze_backbone_if_configured()
+        
         # Build loss function
         self.loss_fn = self._build_loss_function()
         
@@ -115,7 +118,9 @@ class DAITrainer:
         self._setup_wandb()
         
         logger.info(f"Initialized DAITrainer on device: {self.device}")
-        logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()) / 1e6:.2f}M")
+        total_params = sum(p.numel() for p in self.model.parameters()) / 1e6
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e6
+        logger.info(f"Model parameters: {total_params:.2f}M total, {trainable_params:.2f}M trainable")
     
     def _determine_training_mode(self) -> str:
         """
@@ -147,6 +152,26 @@ class DAITrainer:
         
         return model
     
+    def _freeze_backbone_if_configured(self):
+        """Freeze backbone parameters if freeze_backbone is enabled in config"""
+        freeze_backbone = self.config.get('model', {}).get('freeze_backbone', True)
+        
+        if freeze_backbone:
+            # Freeze all parameters in the backbone
+            for param in self.model.backbone.parameters():
+                param.requires_grad = False
+            
+            # Count frozen vs trainable parameters
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            frozen_params = total_params - trainable_params
+            
+            logger.info(f"🔒 Backbone FROZEN: {frozen_params/1e6:.2f}M parameters frozen")
+            logger.info(f"🔓 Trainable parameters: {trainable_params/1e6:.2f}M (excluding backbone)")
+        else:
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            logger.info(f"🔓 Backbone NOT frozen: all {trainable_params/1e6:.2f}M parameters trainable")
+    
     def _build_loss_function(self) -> nn.Module:
         """Build loss function based on training mode"""
         loss_config = self.config.get('loss', {})
@@ -156,29 +181,32 @@ class DAITrainer:
         return loss_fn
     
     def _build_optimizer(self) -> torch.optim.Optimizer:
-        """Build optimizer from config"""
+        """Build optimizer from config (only for trainable parameters)"""
         opt_config = self.config.get('optimization', {}).get('optimizer', {})
         
         optimizer_name = opt_config.get('name', 'AdamW')
         lr = opt_config.get('lr', 0.0024)
         weight_decay = opt_config.get('weight_decay', 1e-5)
         
+        # Only optimize parameters that require gradients (excludes frozen backbone)
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        
         if optimizer_name == 'AdamW':
             optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                trainable_params,
                 lr=lr,
                 weight_decay=weight_decay,
                 eps=opt_config.get('eps', 1e-8)
             )
         elif optimizer_name == 'Adam':
             optimizer = torch.optim.Adam(
-                self.model.parameters(),
+                trainable_params,
                 lr=lr,
                 weight_decay=weight_decay
             )
         elif optimizer_name == 'SGD':
             optimizer = torch.optim.SGD(
-                self.model.parameters(),
+                trainable_params,
                 lr=lr,
                 momentum=opt_config.get('momentum', 0.9),
                 weight_decay=weight_decay
@@ -186,7 +214,7 @@ class DAITrainer:
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
         
-        logger.info(f"Built {optimizer_name} optimizer with lr={lr}")
+        logger.info(f"Built {optimizer_name} optimizer with lr={lr} for {len(trainable_params)} parameter groups")
         return optimizer
     
     def _build_scheduler(self) -> Optional[torch.optim.lr_scheduler._LRScheduler]:

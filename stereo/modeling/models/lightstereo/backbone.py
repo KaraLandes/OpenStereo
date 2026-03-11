@@ -39,8 +39,9 @@ class Backbone(nn.Module):
             raise NotImplementedError
 
         self.conv_stem = model.conv_stem
-        self.bn1 = model.bn1
-        self.act1 = model.act1
+        self.bn1 = model.bn1  # BatchNormAct2d includes activation in newer timm
+        # Handle both old and new timm API
+        self.act1 = model.act1 if hasattr(model, 'act1') else nn.Identity()
         self.block0 = model.blocks[0]
         self.block1 = model.blocks[1]
         self.block2 = model.blocks[2]

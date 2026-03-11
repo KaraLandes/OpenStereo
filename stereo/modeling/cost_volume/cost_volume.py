@@ -2,6 +2,7 @@
 # @Author  : zhangchenming
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from stereo.modeling.common.basic_block_3d import BasicConv3d
 from stereo.modeling.common.basic_block_2d import BasicConv2d
 
@@ -39,6 +40,48 @@ def correlation_volume(left_feature, right_feature, max_disp):
             cost_volume[:, i, :, :] = (left_feature * right_feature).mean(dim=1)
     cost_volume = cost_volume.contiguous()
     return cost_volume
+
+
+def correlation_volume_onnx(left_feature, right_feature, max_disp):
+    """
+    ONNX-friendly correlation volume without Python loops.
+    Uses unfold to create all shifted versions in a single operation.
+    
+    Args:
+        left_feature: [B, C, H, W]
+        right_feature: [B, C, H, W]
+        max_disp: maximum disparity (at feature scale, e.g., max_disp // 4)
+    
+    Returns:
+        cost_volume: [B, max_disp, H, W]
+    """
+    B, C, H, W = left_feature.shape
+    
+    # Pad right feature on the left side with zeros
+    # This allows us to extract shifted versions via unfold
+    # Shape after pad: [B, C, H, W + max_disp - 1]
+    right_padded = F.pad(right_feature, (max_disp - 1, 0), mode='constant', value=0)
+    
+    # Unfold along width (dim=3) to get all shifted versions
+    # kernel_size=W, stride=1 gives us max_disp shifted versions
+    # Shape: [B, C, H, max_disp, W]
+    right_unfolded = right_padded.unfold(3, W, 1)
+    
+    # Flip along disparity dimension so disparity 0 = no shift, disparity i = shift by i
+    # Shape: [B, C, H, max_disp, W]
+    right_unfolded = right_unfolded.flip(3)
+    
+    # Permute to [B, C, max_disp, H, W] for easier broadcasting
+    right_unfolded = right_unfolded.permute(0, 1, 3, 2, 4)
+    
+    # Expand left feature for broadcasting: [B, C, 1, H, W]
+    left_expanded = left_feature.unsqueeze(2)
+    
+    # Element-wise correlation and mean over channels
+    # [B, C, max_disp, H, W] -> [B, max_disp, H, W]
+    cost_volume = (left_expanded * right_unfolded).mean(dim=1)
+    
+    return cost_volume.contiguous()
 
 
 def compute_volume(reference_embedding, target_embedding, maxdisp, side='left'):

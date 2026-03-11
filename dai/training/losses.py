@@ -78,6 +78,19 @@ class SupervisedLoss(nn.Module):
             total_loss += loss
             loss_dict['loss_disp_4'] = loss.item()
         
+        # Penalty for high disparity in invalid regions (sky, etc.)
+        invalid_reg_weight = self.loss_weights.get('invalid_region_penalty', 0.0)
+        if invalid_reg_weight > 0 and 'disp_pred' in model_output:
+            invalid_mask = ~valid_mask
+            if invalid_mask.any():
+                disp_pred = model_output['disp_pred']
+                invalid_disp = disp_pred[invalid_mask]
+                # Penalize predictions above threshold (default 5px)
+                threshold = self.loss_weights.get('invalid_region_threshold', 5.0)
+                penalty = F.relu(invalid_disp - threshold).mean()
+                total_loss = total_loss + invalid_reg_weight * penalty
+                loss_dict['loss_invalid_reg'] = (invalid_reg_weight * penalty).item()
+        
         loss_dict['loss_total'] = total_loss.item()
         
         return total_loss, loss_dict
