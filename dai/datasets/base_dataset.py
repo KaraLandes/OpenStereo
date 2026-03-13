@@ -46,7 +46,7 @@ class BaseStereoDataset(Dataset, ABC):
         self.target_source = config.get('target_source', 'provided')
         
         # Validate target_source
-        valid_sources = ['provided', 'pseudo-foundationstereo', 'ssl']
+        valid_sources = ['provided', 'pseudo-foundationstereo', 'pseudo-foundationstereo-online', 'ssl']
         if self.target_source not in valid_sources:
             raise ValueError(
                 f"Invalid target_source '{self.target_source}'. "
@@ -191,6 +191,13 @@ class BaseStereoDataset(Dataset, ABC):
                     "Consider running generate_foundationstereo_disparities.py first."
                 )
                 return self._generate_pseudo_disparity(left_img, right_img)
+        
+        elif self.target_source == 'pseudo-foundationstereo-online':
+            # Return dummy disparity - actual pseudo GT generated in trainer
+            # This avoids loading FoundationStereo in DataLoader workers
+            import numpy as np
+            h, w = left_img.shape[:2]
+            return np.zeros((h, w), dtype=np.float32)
         
         elif self.target_source == 'ssl':
             # Return zeros for self-supervised learning

@@ -337,6 +337,71 @@ class RandomScale:
         return sample
 
 
+class Resize:
+    """
+    Resize images and disparity to fixed size.
+    """
+    
+    def __init__(self, size: List[int]):
+        """
+        Args:
+            size: [height, width] target size
+        """
+        self.target_h, self.target_w = size
+    
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        import cv2
+        
+        # Handle both numpy arrays [H, W, C] and tensors [C, H, W]
+        if isinstance(sample['left'], np.ndarray):
+            # Numpy arrays: [H, W, C]
+            orig_h, orig_w = sample['left'].shape[:2]
+            
+            # Resize images
+            sample['left'] = cv2.resize(sample['left'], (self.target_w, self.target_h), 
+                                       interpolation=cv2.INTER_LINEAR)
+            sample['right'] = cv2.resize(sample['right'], (self.target_w, self.target_h), 
+                                        interpolation=cv2.INTER_LINEAR)
+            
+            # Resize disparity and scale values (INTER_LINEAR has lowest MAE: 1.094)
+            sample['disparity'] = cv2.resize(sample['disparity'], (self.target_w, self.target_h), 
+                                            interpolation=cv2.INTER_LINEAR)
+            sample['disparity'] = sample['disparity'] * (self.target_w / orig_w)
+            
+            # Resize valid mask
+            sample['valid_mask'] = cv2.resize(sample['valid_mask'].astype(np.uint8), 
+                                             (self.target_w, self.target_h), 
+                                             interpolation=cv2.INTER_NEAREST).astype(bool)
+        else:
+            # Tensors: [C, H, W]
+            import torch.nn.functional as F
+            _, orig_h, orig_w = sample['left'].shape
+            
+            sample['left'] = F.interpolate(
+                sample['left'].unsqueeze(0), size=(self.target_h, self.target_w), 
+                mode='bilinear', align_corners=False
+            ).squeeze(0)
+            
+            sample['right'] = F.interpolate(
+                sample['right'].unsqueeze(0), size=(self.target_h, self.target_w), 
+                mode='bilinear', align_corners=False
+            ).squeeze(0)
+            
+            sample['disparity'] = F.interpolate(
+                sample['disparity'].unsqueeze(0).unsqueeze(0), 
+                size=(self.target_h, self.target_w), 
+                mode='nearest'
+            ).squeeze(0).squeeze(0) * (self.target_w / orig_w)
+            
+            sample['valid_mask'] = F.interpolate(
+                sample['valid_mask'].unsqueeze(0).unsqueeze(0).float(), 
+                size=(self.target_h, self.target_w), 
+                mode='nearest'
+            ).squeeze(0).squeeze(0).bool()
+        
+        return sample
+
+
 def build_transforms(config: Dict[str, Any], split: str = 'train') -> Compose:
     """
     Build transform pipeline from config.
@@ -374,6 +439,10 @@ def build_transforms(config: Dict[str, Any], split: str = 'train') -> Compose:
             max_scale = t_config.get('max_scale', 0.4)
             scale_prob = t_config.get('scale_prob', 0.8)
             transform_list.append(RandomScale(min_scale, max_scale, scale_prob))
+        
+        elif name == 'Resize':
+            size = t_config['size']
+            transform_list.append(Resize(size))
         
         elif name == 'StereoColorJitter':
             brightness = t_config.get('brightness', [0.6, 1.4])

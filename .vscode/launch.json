@@ -1,0 +1,56 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Test Online Pseudo GT Mode",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/dai/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--config",
+                "${workspaceFolder}/dai/configs/test_online_pseudo.yaml"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Test Online Pseudo GT Mode (CPU)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/dai/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--config",
+                "${workspaceFolder}/dai/configs/test_online_pseudo.yaml"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "CUDA_VISIBLE_DEVICES": ""
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Test Normal Mode (Baseline)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/dai/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--config",
+                "${workspaceFolder}/dai/configs/stereo_flow.yaml"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

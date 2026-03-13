@@ -61,6 +61,7 @@ class SequentialTrainer(DAITrainer):
         Visualizes the last frame of each sequence.
         """
         import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
         import numpy as np
         
         if self.val_loader is None:
@@ -102,14 +103,29 @@ class SequentialTrainer(DAITrainer):
             # Create figure with 3 subplots
             fig, axes = plt.subplots(1, 3, figsize=(18, 6))
             
+            # Custom colormap with uneven distribution for bins: 0-75, 75-250, 250-512
+            bounds = [0, 50, 175, 512]
+            # Map bounds to [0, 1] interval for colormap positions
+            norm_bounds = np.interp(bounds, [bounds[0], bounds[-1]], [0, 1])
+            # Sample full turbo colormap at 256 positions
+            turbo_cmap = plt.cm.turbo
+            turbo_colors = turbo_cmap(np.linspace(0, 1, 256))
+            # Create color list with uneven distribution
+            color_positions = []
+            for i in range(len(bounds) - 1):
+                n_colors = int(256 * (norm_bounds[i+1] - norm_bounds[i]))
+                color_positions.extend(np.linspace(i/(len(bounds)-1), (i+1)/(len(bounds)-1), n_colors))
+            custom_colors = turbo_cmap(np.array(color_positions))
+            custom_cmap = LinearSegmentedColormap.from_list('custom_disp', custom_colors, N=256)
+            
             # Plot GT disparity
-            im0 = axes[0].imshow(gt_disp, cmap='turbo', vmin=0, vmax=192)
+            im0 = axes[0].imshow(gt_disp, cmap=custom_cmap, vmin=0, vmax=512)
             axes[0].set_title(f'GT Disparity (Seq {sample_idx}, Last Frame)', fontsize=12)
             axes[0].axis('off')
             plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
             
             # Plot predicted disparity
-            im1 = axes[1].imshow(pred_disp, cmap='turbo', vmin=0, vmax=192)
+            im1 = axes[1].imshow(pred_disp, cmap=custom_cmap, vmin=0, vmax=512)
             axes[1].set_title(f'Predicted Disparity (Seq {sample_idx}, Last Frame)', fontsize=12)
             axes[1].axis('off')
             plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)

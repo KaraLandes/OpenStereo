@@ -1,0 +1,125 @@
+# Test Configuration for pseudo-foundationstereo-online Mode
+# This config is designed for quick testing and debugging
+
+seed: 28
+
+datasets:
+  - name: sceneflow
+    root: ./src_data/sceneflow
+    subsets:
+      - monkaa  # Use only monkaa for faster testing
+      - driving
+      - flyingthings3d
+    pass_type: cleanpass
+    resolution: null  # Use original resolution
+    target_source: pseudo-foundationstereo-online  # NEW MODE - online pseudo GT generation
+    return_right_disp: false
+
+splitter:
+  train:
+    enabled: true
+    proportion: 0.7
+  val:
+    enabled: true
+    proportion: 0.15
+  test:
+    enabled: true
+    proportion: 0.15
+  seed: 42
+  strategy: stratified
+
+transforms:
+  train:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  val:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  test:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+dataloader:
+  batch_size: 12  # Small batch size for testing
+  num_workers: 12  # Fewer workers for debugging
+  shuffle: true
+  pin_memory: true
+  drop_last: true
+  persistent_workers: false  # Disable for easier debugging
+  prefetch_factor: 1
+
+# Model configuration
+model:
+  name: LightStereo
+  variant: S
+  max_disp: 300  # Smaller max_disp for faster testing
+  left_att: true
+  aggregation_blocks: [1, 2, 4]
+  expanse_ratio: 4
+  backbone: MobileNetv2
+  freeze_backbone: true
+
+# FoundationStereo configuration (REQUIRED for pseudo-foundationstereo-online mode)
+foundationstereo:
+  model_size: small  # Options: 'small', 'base', 'large'
+  inference_batch_size: 12  # Sub-batch size for FoundationStereo inference (reduce if cuDNN errors)
+  inference_iters: 12  # GRU iterations (default 32, 12 is ~2.5x faster with minimal quality loss)
+  inference_amp: true  # Float16 autocast for faster inference
+  prefetch_buffer_size: 400  # Number of batches to buffer in prefetcher queue (1-5 recommended)
+
+# Training optimization
+optimization:
+  num_epochs: 90  # Only 3 epochs for testing
+  executable_epochs: 90  # Run only 3 epochs
+  amp: false  # Disable AMP for easier debugging
+  grad_clip_value: 0.1
+  accumulation_steps: 2
+  
+  optimizer:
+    name: AdamW
+    lr: 0.001
+    weight_decay: 0.00001
+    eps: 0.00000001
+  
+  scheduler:
+    name: OneCycleLR
+    pct_start: 0.05
+    on_epoch: false
+
+# Loss function configuration
+loss:
+  loss_weights:
+    disp_pred: 1.0
+    disp_4: 0.3
+
+# Training mode
+training:
+  mode: normal  # Will be overridden by OnlinePseudoGTTrainer due to target_source
+
+# Logging configuration
+logging:
+  wandb:
+    project: lightstereo
+    entity: null
+    run_name: online_pseudo_gt_256X512
+    group: training_classic_02
+    tags: []
+  
+  log_interval: 10  # Log every 10 iterations for debugging
+  save_interval: 1  # Save every epoch
+
+# Checkpoint saving
+checkpoints:
+  save_dir: src_data/lightstereo_training/online_presudo_gt
+  save_best: true
+  save_periodic: true

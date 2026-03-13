@@ -22,16 +22,8 @@ from stereo.modeling.models.foundationstereo.Utils import *
 import time,huggingface_hub
 
 
-try:
-    autocast = torch.cuda.amp.autocast
-except:
-    class autocast:
-        def __init__(self, enabled):
-            pass
-        def __enter__(self):
-            pass
-        def __exit__(self, *args):
-            pass
+from functools import partial
+autocast = partial(torch.amp.autocast, 'cuda')
 
 
 def normalize_image(img):

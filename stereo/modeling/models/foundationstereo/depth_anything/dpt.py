@@ -152,12 +152,17 @@ class DPT_DINOv2(nn.Module):
         assert encoder in ['vits', 'vitb', 'vitl']
 
         # in case the Internet connection is not stable, please load the DINOv2 locally
-        # if localhub:
-        #     self.pretrained = torch.hub.load('torchhub/facebookresearch_dinov2_main', 'dinov2_{:}14'.format(encoder), source='local', pretrained=False)
-        # else:
-        # self.pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_{:}14'.format(encoder), pretrained=pretrained_dino, skip_validation=True)
-        self.pretrained = torch.hub.load('/file_system/vepfs/algorithm/chenming.zhang/.cache/torch/hub/facebookresearch_dinov2_main', 'dinov2_{:}14'.format(encoder),
-                                         source='local', pretrained=False)
+        # Use local DINOv2 implementation (already imported at top of file)
+        # This avoids torch.hub dependency issues
+        if encoder == 'vits':
+            self.pretrained = vit_small(patch_size=14, img_size=518, init_values=1.0, block_chunks=0)
+        elif encoder == 'vitb':
+            self.pretrained = vit_base(patch_size=14, img_size=518, init_values=1.0, block_chunks=0)
+        elif encoder == 'vitl':
+            self.pretrained = vit_large(patch_size=14, img_size=518, init_values=1.0, block_chunks=0)
+        
+        # Note: pretrained_dino parameter is ignored when using local models
+        # The weights will be loaded from the FoundationStereo checkpoint instead
 
         dim = self.pretrained.blocks[0].attn.qkv.in_features
 
