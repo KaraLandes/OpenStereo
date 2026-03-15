@@ -381,3 +381,94 @@ class KITTI15Discovery(BaseDiscoveryStrategy):
                 return False
         
         return True
+
+
+@DatasetRegistry.register('irs')
+class IRSDiscovery(BaseDiscoveryStrategy):
+    """
+    Discovery strategy for IRS (Indoor Robotics Stereo) dataset.
+    
+    Expected structure:
+        root/
+            {Home_1,Home_2,Office_1,Office_2,Restaurant,Store,IRS_small}/
+                SceneName/
+                    l_00001.png (left image)
+                    r_00001.png (right image)
+                    d_00001.exr (disparity GT)
+                    n_00001.exr (surface normal, unused)
+    """
+    
+    def discover_samples(self, root: Path, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Discover IRS dataset samples.
+        
+        Args:
+            root: Root directory of IRS dataset
+            config: Dataset configuration with optional 'subsets' key
+            
+        Returns:
+            List of sample dictionaries
+        """
+        subsets = config.get('subsets', [
+            'Home_1', 'Home_2', 'Office_1', 'Office_2', 'Restaurant', 'Store'
+        ])
+        target_source = config.get('target_source', 'pseudo-foundationstereo-online')
+        
+        samples = []
+        
+        for subset in subsets:
+            subset_path = root / subset
+            if not subset_path.exists():
+                logger.warning(f"IRS subset not found: {subset_path}")
+                continue
+            
+            # Find all scene directories
+            scene_dirs = sorted([d for d in subset_path.iterdir() if d.is_dir()])
+            
+            for scene_dir in scene_dirs:
+                # Find all left images: l_*.png
+                left_images = sorted(scene_dir.glob('l_*.png'))
+                
+                for left_img in left_images:
+                    frame_id = left_img.stem[2:]  # strip "l_" prefix
+                    right_img = scene_dir / f'r_{frame_id}.png'
+                    
+                    if not right_img.exists():
+                        continue
+                    
+                    # Disparity path (may not exist for online pseudo GT mode)
+                    disp_path = scene_dir / f'd_{frame_id}.exr'
+                    
+                    # FoundationStereo pre-computed pseudo GT path
+                    disp_foundationstereo_path = scene_dir / f'd_foundationstereo_{frame_id}.exr'
+                    
+                    sample = {
+                        'left': str(left_img),
+                        'right': str(right_img),
+                        'disparity': str(disp_path) if disp_path.exists() else None,
+                        'disparity_foundationstereo': str(disp_foundationstereo_path) if disp_foundationstereo_path.exists() else None,
+                        'metadata': {
+                            'dataset': 'irs',
+                            'subset': subset,
+                            'scene': scene_dir.name,
+                            'frame_id': frame_id,
+                        }
+                    }
+                    
+                    if self.validate_sample(sample):
+                        samples.append(sample)
+            
+            logger.info(f"IRS subset '{subset}': {sum(1 for s in samples if s['metadata']['subset'] == subset)} samples")
+        
+        logger.info(f"Discovered {len(samples)} IRS samples total")
+        return samples
+    
+    def validate_sample(self, sample: Dict[str, Any]) -> bool:
+        """Validate IRS sample — only left/right images required."""
+        left_path = Path(sample['left'])
+        right_path = Path(sample['right'])
+        
+        if not left_path.exists() or not right_path.exists():
+            return False
+        
+        return True

@@ -1,0 +1,128 @@
+# IRS Dataset - Online FoundationStereo Pseudo GT Training
+# Indoor Robotics Stereo: Home, Office, Restaurant, Store
+# Camera: baseline=0.1m, focal=480px, resolution=540x960
+
+seed: 28
+
+datasets:
+  - name: irs
+    root: ./src_data/IRS
+    subsets:
+      - Home_1
+      - Home_2
+      - Office_1
+      - Office_2
+      - Restaurant
+      - Store
+    resolution: null  # Native 540x960
+    target_source: pseudo-foundationstereo-online
+    return_right_disp: false
+
+splitter:
+  train:
+    enabled: true
+    proportion: 0.7
+  val:
+    enabled: true
+    proportion: 0.15
+  test:
+    enabled: true
+    proportion: 0.15
+  seed: 42
+  strategy: stratified
+
+transforms:
+  train:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  val:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  
+  test:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
+    - {name: RightBottomPad, divisor: 32}
+    - {name: ToTensor}
+    - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+dataloader:
+  batch_size: 12
+  num_workers: 12
+  shuffle: true
+  pin_memory: true
+  drop_last: true
+  persistent_workers: false
+  prefetch_factor: 1
+
+# Model configuration
+model:
+  name: LightStereo
+  variant: S
+  max_disp: 300
+  left_att: true
+  aggregation_blocks: [1, 2, 4]
+  expanse_ratio: 4
+  backbone: MobileNetv2
+  freeze_backbone: true
+
+# FoundationStereo configuration (REQUIRED for pseudo-foundationstereo-online mode)
+foundationstereo:
+  model_size: small
+  inference_batch_size: 12
+  inference_iters: 12
+  inference_amp: true
+  prefetch_buffer_size: 400
+
+# Training optimization
+optimization:
+  num_epochs: 90
+  executable_epochs: 90
+  amp: false
+  grad_clip_value: 0.1
+  accumulation_steps: 2
+  
+  optimizer:
+    name: AdamW
+    lr: 0.001
+    weight_decay: 0.00001
+    eps: 0.00000001
+  
+  scheduler:
+    name: OneCycleLR
+    pct_start: 0.05
+    on_epoch: false
+
+# Loss function configuration
+loss:
+  loss_weights:
+    disp_pred: 1.0
+    disp_4: 0.3
+
+# Training mode
+training:
+  mode: normal  # Overridden by OnlinePseudoGTTrainer due to target_source
+
+# Logging configuration
+logging:
+  wandb:
+    project: lightstereo
+    entity: null
+    run_name: irs_online_pseudo_gt_256x512
+    group: training_irs
+    tags: [irs, online_pseudo_gt]
+  
+  log_interval: 10
+  save_interval: 1
+
+# Checkpoint saving
+checkpoints:
+  save_dir: src_data/lightstereo_training/irs_online_pseudo_gt
+  save_best: true
+  save_periodic: true

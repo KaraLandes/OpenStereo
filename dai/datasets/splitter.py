@@ -93,9 +93,11 @@ class DatasetSplitter:
             val_prop /= total
             test_prop /= total
         
-        # Use stratified splitting for SceneFlow, simple splitting for others
+        # Use stratified splitting for SceneFlow/IRS, simple splitting for others
         if dataset_name == 'sceneflow' and self.strategy == 'stratified':
             splits = self._split_samples_stratified_sceneflow(samples, train_prop, val_prop, test_prop)
+        elif dataset_name == 'irs' and self.strategy == 'stratified':
+            splits = self._split_samples_stratified_irs(samples, train_prop, val_prop, test_prop)
         else:
             splits = self._split_samples(samples, train_prop, val_prop, test_prop)
         
@@ -277,6 +279,76 @@ class DatasetSplitter:
                 
                 logger.info(f"{subset} stratified split: {len(scene_dict)} video sequences, "
                            f"sequential split within each")
+        
+        splits = {
+            'train': train_samples if self.train_config.get('enabled', True) else [],
+            'val': val_samples if self.val_config.get('enabled', True) else [],
+            'test': test_samples if self.test_config.get('enabled', True) else [],
+        }
+        
+        return splits
+    
+    def _split_samples_stratified_irs(
+        self,
+        samples: List[Dict[str, Any]],
+        train_prop: float,
+        val_prop: float,
+        test_prop: float
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Stratified split for IRS dataset (Monkaa-style scene-level splitting).
+        
+        Entire scenes are assigned to train/val/test — no frame leakage.
+        Scenes from all subsets are pooled together before splitting.
+        
+        Args:
+            samples: List of samples with metadata containing 'subset' and 'scene'
+            train_prop: Train proportion
+            val_prop: Validation proportion
+            test_prop: Test proportion
+            
+        Returns:
+            Dictionary with 'train', 'val', 'test' keys
+        """
+        from collections import defaultdict
+        
+        # Group samples by scene (subset/scene as key to avoid name collisions)
+        scene_groups = defaultdict(list)
+        for sample in samples:
+            subset = sample['metadata']['subset']
+            scene = sample['metadata']['scene']
+            scene_key = f"{subset}/{scene}"
+            scene_groups[scene_key].append(sample)
+        
+        # Shuffle scenes and split by proportion
+        scenes = list(scene_groups.keys())
+        random.seed(self.seed)
+        random.shuffle(scenes)
+        
+        n_scenes = len(scenes)
+        n_train = int(n_scenes * train_prop)
+        n_val = int(n_scenes * val_prop)
+        
+        train_scenes = scenes[:n_train]
+        val_scenes = scenes[n_train:n_train + n_val]
+        test_scenes = scenes[n_train + n_val:]
+        
+        train_samples = []
+        val_samples = []
+        test_samples = []
+        
+        for scene in train_scenes:
+            train_samples.extend(scene_groups[scene])
+        for scene in val_scenes:
+            val_samples.extend(scene_groups[scene])
+        for scene in test_scenes:
+            test_samples.extend(scene_groups[scene])
+        
+        logger.info(
+            f"IRS stratified split: {len(train_scenes)} train scenes, "
+            f"{len(val_scenes)} val scenes, {len(test_scenes)} test scenes "
+            f"(from {n_scenes} total scenes)"
+        )
         
         splits = {
             'train': train_samples if self.train_config.get('enabled', True) else [],

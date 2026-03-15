@@ -52,6 +52,8 @@ termcolor>=2.3.0
 albumentations>=1.3.0  # Advanced data augmentation
 imageio>=2.31.0
 imageio-ffmpeg>=0.4.8
+OpenEXR>=3.2.0  # EXR file loading for IRS dataset
+Imath>=0.0.1  # Required by OpenEXR
 
 # ============================================================================
 # Performance & Profiling (Optional but recommended for A100)
