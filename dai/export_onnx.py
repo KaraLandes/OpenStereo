@@ -230,11 +230,15 @@ def export_to_onnx(
         onnx_model,
         (left, right),
         output_path,
-        input_names=['left', 'right'],
-        output_names=['disparity'],
+        input_names=['left_img', 'right_img'],
+        output_names=['disp_pred'],
         opset_version=opset_version,
         do_constant_folding=True,
-        dynamic_axes=None,  # Fixed shape for TensorRT compatibility
+        dynamic_axes={
+            'left_img': {0: 'batch_size'},
+            'right_img': {0: 'batch_size'},
+            'disp_pred': {0: 'batch_size'}
+        },
         verbose=False,
         export_params=True,
         dynamo=False  # Use legacy TorchScript exporter
@@ -400,8 +404,8 @@ def validate_onnx(
     ort_session = ort.InferenceSession(onnx_path, providers=providers)
     
     ort_inputs = {
-        'left': left.cpu().numpy(),
-        'right': right.cpu().numpy()
+        'left_img': left.cpu().numpy(),
+        'right_img': right.cpu().numpy()
     }
     ort_output = ort_session.run(None, ort_inputs)[0]
     
@@ -477,6 +481,8 @@ def main():
                         help='Path to PyTorch checkpoint (.pth)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output ONNX path (default: same as checkpoint with .onnx)')
+    parser.add_argument('--basename', type=str, default=None,
+                        help='Basename of outputed onnx model')
     parser.add_argument('--height', type=int, default=256,
                         help='Input image height (default: 256)')
     parser.add_argument('--width', type=int, default=512,
@@ -499,9 +505,17 @@ def main():
     
     args = parser.parse_args()
     
-    # Set output path
+    # Set output path with proper naming format: {model_name}_{height}_{width}.onnx
     if args.output is None:
-        args.output = str(Path(args.checkpoint).with_suffix('.onnx'))
+        checkpoint_path = Path(args.checkpoint)
+        parent_dir = checkpoint_path.parent
+        
+        # Extract model name from checkpoint filename (remove .pth extension)
+        model_name = args.basename if args.basename else checkpoint_path.stem
+        
+        # Create filename following iStereoLab requirements: {name}_{H}_{W}.onnx
+        output_filename = f"{model_name}_{args.height}_{args.width}.onnx"
+        args.output = str(parent_dir / output_filename)
     
     print("="*60)
     print("LightStereo ONNX Export")
