@@ -55,20 +55,36 @@ class IRSDataset(BaseStereoDataset):
     
     def _load_disparity(self, path: str) -> np.ndarray:
         """
-        Load disparity from .exr file.
+        Load disparity from file.
         
-        Not implemented — IRS is used with online pseudo GT mode.
+        Supports:
+        - .npy files (presaved pseudo-GT disparities)
+        - .exr files (original ground truth disparities)
         
         Args:
-            path: Path to .exr file
+            path: Path to disparity file (.npy or .exr)
             
-        Raises:
-            NotImplementedError: provided mode is not yet supported for IRS
+        Returns:
+            Disparity array [H, W]
         """
-        raise NotImplementedError(
-            "IRS _load_disparity (provided mode) is not yet implemented. "
-            "Use target_source: 'pseudo-foundationstereo-online' or 'ssl' instead."
-        )
+        path = Path(path)
+        
+        if path.suffix == '.npy':
+            # Load presaved pseudo-GT disparity
+            disparity = np.load(str(path))
+            return disparity.astype(np.float32)
+        
+        elif path.suffix == '.exr':
+            # Load original ground truth from .exr
+            from .exr_loader import load_exr_disparity
+            disparity = load_exr_disparity(str(path))
+            return disparity
+        
+        else:
+            raise ValueError(
+                f"Unsupported disparity file format: {path.suffix}. "
+                f"Supported formats: .npy (presaved pseudo-GT), .exr (original GT)"
+            )
     
     def _resize(self, left_img: np.ndarray, right_img: np.ndarray, 
                 disparity: np.ndarray) -> tuple:

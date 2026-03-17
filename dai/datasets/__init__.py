@@ -14,6 +14,7 @@ from .irs_dataset import IRSDataset
 from .postprocessing_dataset import PostprocessingDataset
 from .collate import sequential_collate_fn
 from .transforms import build_transforms, Compose
+from .presaved_pseudo_dataset import PresavedPseudoGTDataset
 
 # Import discovery strategies to populate registry
 # This must happen after DatasetRegistry is imported
@@ -30,6 +31,7 @@ __all__ = [
     'KITTI15Dataset',
     'IRSDataset',
     'PostprocessingDataset',
+    'PresavedPseudoGTDataset',
     'sequential_collate_fn',
     'build_transforms',
     'Compose',

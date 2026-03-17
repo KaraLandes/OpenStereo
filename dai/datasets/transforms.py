@@ -110,6 +110,83 @@ class RandomCrop:
         y = random.randint(0, h - self.crop_h)
         x = random.randint(0, w - self.crop_w)
         
+        # Store crop coordinates in metadata for presaved pseudo-GT loading
+        if 'crop_coords' not in sample:
+            sample['crop_coords'] = {}
+        sample['crop_coords']['y'] = y
+        sample['crop_coords']['x'] = x
+        
+        # Crop based on data type
+        if isinstance(sample['left'], np.ndarray):
+            # Numpy arrays: [H, W, C]
+            sample['left'] = sample['left'][y:y+self.crop_h, x:x+self.crop_w, :]
+            sample['right'] = sample['right'][y:y+self.crop_h, x:x+self.crop_w, :]
+            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
+            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+        else:
+            # Tensors: [C, H, W]
+            sample['left'] = sample['left'][:, y:y+self.crop_h, x:x+self.crop_w]
+            sample['right'] = sample['right'][:, y:y+self.crop_h, x:x+self.crop_w]
+            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
+            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+        
+        return sample
+
+
+class StridedRandomCrop:
+    """
+    Strided random crop for stereo pairs with grid-based positions.
+    Reduces storage requirements by limiting crop positions to a regular grid.
+    
+    Instead of fully random positions, crops are selected from a grid with
+    specified stride (e.g., stride=50 means positions: 0, 50, 100, 150, ...).
+    """
+    
+    def __init__(self, size: List[int], stride: int = 50):
+        """
+        Args:
+            size: [height, width] of crop
+            stride: Grid stride in pixels (default: 50)
+        """
+        self.crop_h, self.crop_w = size
+        self.stride = stride
+    
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        # Handle both numpy arrays [H, W, C] and tensors [C, H, W]
+        if isinstance(sample['left'], np.ndarray):
+            # Numpy array: [H, W, C]
+            h, w = sample['left'].shape[:2]
+        else:
+            # Tensor: [C, H, W]
+            _, h, w = sample['left'].shape
+        
+        # If image smaller than crop, return as-is
+        if h < self.crop_h or w < self.crop_w:
+            return sample
+        
+        # Calculate all valid strided positions
+        max_y = h - self.crop_h
+        max_x = w - self.crop_w
+        
+        y_positions = list(range(0, max_y + 1, self.stride))
+        x_positions = list(range(0, max_x + 1, self.stride))
+        
+        # Ensure we include the maximum valid position if not already included
+        if y_positions[-1] < max_y:
+            y_positions.append(max_y)
+        if x_positions[-1] < max_x:
+            x_positions.append(max_x)
+        
+        # Randomly select one position from the grid
+        y = random.choice(y_positions)
+        x = random.choice(x_positions)
+        
+        # Store crop coordinates in metadata for presaved pseudo-GT loading
+        if 'crop_coords' not in sample:
+            sample['crop_coords'] = {}
+        sample['crop_coords']['y'] = y
+        sample['crop_coords']['x'] = x
+        
         # Crop based on data type
         if isinstance(sample['left'], np.ndarray):
             # Numpy arrays: [H, W, C]
@@ -433,6 +510,11 @@ def build_transforms(config: Dict[str, Any], split: str = 'train') -> Compose:
         elif name == 'RandomCrop':
             size = t_config['size']
             transform_list.append(RandomCrop(size))
+        
+        elif name == 'StridedRandomCrop':
+            size = t_config['size']
+            stride = t_config.get('stride', 50)
+            transform_list.append(StridedRandomCrop(size, stride))
         
         elif name == 'RandomScale':
             min_scale = t_config.get('min_scale', -0.2)

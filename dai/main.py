@@ -26,6 +26,7 @@ from dai.datasets import (
     IRSDataset,
     CombinedStereoDataset,
     PostprocessingDataset,
+    PresavedPseudoGTDataset,
     build_transforms,
     sequential_collate_fn
 )
@@ -178,26 +179,70 @@ class DAIPipeline:
         val_transforms = build_transforms(transform_config, 'val')
         test_transforms = build_transforms(transform_config, 'test')
         
+        # Check if any dataset uses presaved mode
+        use_presaved = any(
+            ds.target_source == 'pseudo-foundationstereo-presaved' 
+            for ds in self.train_datasets + self.val_datasets + self.test_datasets
+        )
+        
+        # Get resize size for presaved wrapper (from transforms config)
+        resize_size = self._get_resize_size_from_transforms(transform_config, 'train')
+        
         # Combine and wrap train datasets
         if len(self.train_datasets) > 1:
             combined = CombinedStereoDataset(self.train_datasets)
-            self.combined_train = PostprocessingDataset(combined, train_transforms)
+            wrapped = PostprocessingDataset(combined, train_transforms)
         elif len(self.train_datasets) == 1:
-            self.combined_train = PostprocessingDataset(self.train_datasets[0], train_transforms)
+            wrapped = PostprocessingDataset(self.train_datasets[0], train_transforms)
+        else:
+            wrapped = None
+        
+        # Apply presaved wrapper if needed
+        if wrapped and use_presaved:
+            self.combined_train = PresavedPseudoGTDataset(wrapped.base_dataset, train_transforms, resize_size)
+        else:
+            self.combined_train = wrapped
         
         # Combine and wrap val datasets
         if len(self.val_datasets) > 1:
             combined = CombinedStereoDataset(self.val_datasets)
-            self.combined_val = PostprocessingDataset(combined, val_transforms)
+            wrapped = PostprocessingDataset(combined, val_transforms)
         elif len(self.val_datasets) == 1:
-            self.combined_val = PostprocessingDataset(self.val_datasets[0], val_transforms)
+            wrapped = PostprocessingDataset(self.val_datasets[0], val_transforms)
+        else:
+            wrapped = None
+        
+        # Apply presaved wrapper if needed
+        if wrapped and use_presaved:
+            self.combined_val = PresavedPseudoGTDataset(wrapped.base_dataset, val_transforms, resize_size)
+        else:
+            self.combined_val = wrapped
         
         # Combine and wrap test datasets
         if len(self.test_datasets) > 1:
             combined = CombinedStereoDataset(self.test_datasets)
-            self.combined_test = PostprocessingDataset(combined, test_transforms)
+            wrapped = PostprocessingDataset(combined, test_transforms)
         elif len(self.test_datasets) == 1:
-            self.combined_test = PostprocessingDataset(self.test_datasets[0], test_transforms)
+            wrapped = PostprocessingDataset(self.test_datasets[0], test_transforms)
+        else:
+            wrapped = None
+        
+        # Apply presaved wrapper if needed
+        if wrapped and use_presaved:
+            self.combined_test = PresavedPseudoGTDataset(wrapped.base_dataset, test_transforms, resize_size)
+        else:
+            self.combined_test = wrapped
+    
+    def _get_resize_size_from_transforms(self, transform_config: dict, split: str) -> list:
+        """Extract resize dimensions from transform config."""
+        if split not in transform_config:
+            return None
+        
+        for transform in transform_config[split]:
+            if transform['name'] == 'Resize':
+                return transform['size']
+        
+        return None
     
     def create_dataloaders(self):
         """Create PyTorch DataLoaders from combined datasets."""
@@ -215,6 +260,10 @@ class DAIPipeline:
             worker_seed = seed + worker_id
             np.random.seed(worker_seed)
             random.seed(worker_seed)
+        
+        # Create generator for reproducible shuffling
+        generator = torch.Generator()
+        generator.manual_seed(seed)
         
         logger.info(f"Creating dataloaders (batch_size={batch_size}, workers={num_workers})...")
         
@@ -234,6 +283,7 @@ class DAIPipeline:
                 drop_last=drop_last,
                 persistent_workers=persistent_workers if num_workers > 0 else False,
                 worker_init_fn=worker_init_fn,
+                generator=generator,
                 collate_fn=collate_fn
             )
         
