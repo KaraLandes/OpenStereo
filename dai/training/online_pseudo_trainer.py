@@ -519,10 +519,6 @@ class OnlinePseudoGTTrainer(DAITrainer):
                 
                 # LR tracking
                 current_lr = self.optimizer.param_groups[0]['lr']
-                if (self.global_step % 50 == 0 or 
-                    self.global_step < 10 or 
-                    self.global_step in [1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1179, 1180]):
-                    logger.info(f"[LR] Step {self.global_step}, LR: {current_lr:.8f}")
             
             # Accumulate loss
             loss_value = loss_dict['loss_total']

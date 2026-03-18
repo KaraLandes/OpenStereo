@@ -230,8 +230,6 @@ class PresavedPseudoGTTrainer(OnlinePseudoGTTrainer):
                 
                 # LR tracking
                 current_lr = self.optimizer.param_groups[0]['lr']
-                if self.global_step % 50 == 0:
-                    logger.info(f"[LR] Step {self.global_step}, LR: {current_lr:.8f}")
             
             # Accumulate loss
             loss_value = loss_dict['loss_total']

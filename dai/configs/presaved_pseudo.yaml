@@ -107,7 +107,7 @@ loss:
     # Extended loss components (0.0 = disabled)
     # Recommended starting point: gradient=0.4, edge_smooth=0.1, second_order_smooth=0.05
     gradient: 0.6        # Gradient matching: sharpens edges, matches GT disparity gradients
-    edge_smooth: 0.0      # Edge-aware smoothness: reduces noise in flat regions, preserves boundaries
+    edge_smooth: 0.2      # Edge-aware smoothness: reduces noise in flat regions, preserves boundaries
     second_order_smooth: 0.00  # Second-order smoothness: encourages planar surfaces, straightens long edges
 
 # Training mode
@@ -119,7 +119,7 @@ logging:
   wandb:
     project: lightstereo
     entity: null
-    run_name: presaved_pseudo_gt_IRS_256X512_with_extended_losses_g6e-1_e0_s0
+    run_name: presaved_pseudo_gt_IRS_256X512_with_extended_losses_g6e-1_e2e-1_s0
     group: training_classic_02
     tags: []
   
