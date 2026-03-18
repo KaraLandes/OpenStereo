@@ -33,6 +33,11 @@ class SupervisedLoss(nn.Module):
         # Temporal consistency weight (0.0 = disabled)
         self.temporal_consistency_weight = self.loss_weights.get('temporal_consistency', 0.0)
         
+        # Extended loss component weights (0.0 = disabled)
+        self.gradient_weight = self.loss_weights.get('gradient', 0.0)
+        self.edge_smooth_weight = self.loss_weights.get('edge_smooth', 0.0)
+        self.second_order_smooth_weight = self.loss_weights.get('second_order_smooth', 0.0)
+        
         logger.info(f"Initialized SupervisedLoss with max_disp={max_disp}, weights={self.loss_weights}")
     
     def forward(self, model_output: dict, batch: dict) -> tuple:
@@ -100,9 +105,137 @@ class SupervisedLoss(nn.Module):
                 total_loss = total_loss + invalid_reg_weight * penalty
                 loss_dict['loss_invalid_reg'] = (invalid_reg_weight * penalty).item()
         
+        # --- Extended loss components (applied to disp_pred only) ---
+        if 'disp_pred' in model_output:
+            disp_pred = model_output['disp_pred']  # [B, 1, H, W]
+            
+            # Gradient matching loss
+            if self.gradient_weight > 0:
+                grad_loss = self._gradient_loss(disp_pred, disp_gt, mask)
+                total_loss = total_loss + self.gradient_weight * grad_loss
+                loss_dict['loss_gradient'] = (self.gradient_weight * grad_loss).item()
+            
+            # Edge-aware first-order smoothness
+            if self.edge_smooth_weight > 0 and 'left' in batch:
+                smooth_loss = self._edge_aware_smoothness(disp_pred, batch['left'])
+                total_loss = total_loss + self.edge_smooth_weight * smooth_loss
+                loss_dict['loss_edge_smooth'] = (self.edge_smooth_weight * smooth_loss).item()
+            
+            # Edge-aware second-order smoothness
+            if self.second_order_smooth_weight > 0 and 'left' in batch:
+                smooth2_loss = self._second_order_smoothness(disp_pred, batch['left'])
+                total_loss = total_loss + self.second_order_smooth_weight * smooth2_loss
+                loss_dict['loss_second_order_smooth'] = (self.second_order_smooth_weight * smooth2_loss).item()
+        
         loss_dict['loss_total'] = total_loss.item()
         
         return total_loss, loss_dict
+    
+    # --- Gradient and smoothness helpers ---
+    
+    @staticmethod
+    def _grad_x(t):
+        """Horizontal finite difference: [B, C, H, W] -> [B, C, H, W-1]"""
+        return t[:, :, :, 1:] - t[:, :, :, :-1]
+    
+    @staticmethod
+    def _grad_y(t):
+        """Vertical finite difference: [B, C, H, W] -> [B, C, H-1, W]"""
+        return t[:, :, 1:, :] - t[:, :, :-1, :]
+    
+    @staticmethod
+    def _image_grad_mag_x(image):
+        """Mean absolute horizontal gradient across channels: [B, C, H, W] -> [B, 1, H, W-1]"""
+        gx = image[:, :, :, 1:] - image[:, :, :, :-1]
+        return gx.abs().mean(dim=1, keepdim=True)
+    
+    @staticmethod
+    def _image_grad_mag_y(image):
+        """Mean absolute vertical gradient across channels: [B, C, H, W] -> [B, 1, H-1, W]"""
+        gy = image[:, :, 1:, :] - image[:, :, :-1, :]
+        return gy.abs().mean(dim=1, keepdim=True)
+    
+    def _gradient_loss(self, pred, gt, mask):
+        """
+        Gradient matching loss: L1 on horizontal/vertical disparity gradients.
+        
+        Args:
+            pred: [B, 1, H, W] predicted disparity
+            gt: [B, 1, H, W] ground-truth disparity
+            mask: [B, 1, H, W] valid pixel mask
+        
+        Returns:
+            Scalar loss tensor
+        """
+        pred_dx = self._grad_x(pred)
+        pred_dy = self._grad_y(pred)
+        gt_dx = self._grad_x(gt)
+        gt_dy = self._grad_y(gt)
+        
+        # Both neighboring pixels must be valid
+        mask_x = mask[:, :, :, 1:] & mask[:, :, :, :-1]
+        mask_y = mask[:, :, 1:, :] & mask[:, :, :-1, :]
+        
+        loss_x = torch.abs(pred_dx - gt_dx)
+        loss_y = torch.abs(pred_dy - gt_dy)
+        
+        num_valid_x = mask_x.sum().clamp(min=1)
+        num_valid_y = mask_y.sum().clamp(min=1)
+        
+        return (loss_x[mask_x].sum() / num_valid_x) + (loss_y[mask_y].sum() / num_valid_y)
+    
+    def _edge_aware_smoothness(self, pred, image):
+        """
+        Edge-aware first-order smoothness loss.
+        Penalizes disparity gradients, weighted down near image edges.
+        
+        Args:
+            pred: [B, 1, H, W] predicted disparity
+            image: [B, C, H, W] left image (normalized)
+        
+        Returns:
+            Scalar loss tensor
+        """
+        pred_dx = self._grad_x(pred)
+        pred_dy = self._grad_y(pred)
+        
+        weight_x = torch.exp(-self._image_grad_mag_x(image))
+        weight_y = torch.exp(-self._image_grad_mag_y(image))
+        
+        loss_x = (torch.abs(pred_dx) * weight_x).mean()
+        loss_y = (torch.abs(pred_dy) * weight_y).mean()
+        
+        return loss_x + loss_y
+    
+    def _second_order_smoothness(self, pred, image):
+        """
+        Edge-aware second-order smoothness loss.
+        Penalizes curvature (change of slope), weighted down near image edges.
+        Encourages planar surfaces.
+        
+        Args:
+            pred: [B, 1, H, W] predicted disparity
+            image: [B, C, H, W] left image (normalized)
+        
+        Returns:
+            Scalar loss tensor
+        """
+        pred_dx = self._grad_x(pred)
+        pred_dy = self._grad_y(pred)
+        pred_dxx = self._grad_x(pred_dx)  # [B, 1, H, W-2]
+        pred_dyy = self._grad_y(pred_dy)  # [B, 1, H-2, W]
+        
+        img_grad_x = self._image_grad_mag_x(image)  # [B, 1, H, W-1]
+        img_grad_y = self._image_grad_mag_y(image)  # [B, 1, H-1, W]
+        
+        # Slice image gradients to match second-derivative sizes
+        weight_x = torch.exp(-img_grad_x[:, :, :, :-1])  # [B, 1, H, W-2]
+        weight_y = torch.exp(-img_grad_y[:, :, :-1, :])  # [B, 1, H-2, W]
+        
+        loss_x = (torch.abs(pred_dxx) * weight_x).mean()
+        loss_y = (torch.abs(pred_dyy) * weight_y).mean()
+        
+        return loss_x + loss_y
     
     def compute_temporal_consistency(self, current_disp, warped_prev_disp, valid_mask):
         """

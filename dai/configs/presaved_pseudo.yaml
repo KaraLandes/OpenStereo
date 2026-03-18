@@ -73,7 +73,7 @@ model:
 
 # FoundationStereo configuration (for generation script)
 foundationstereo:
-  model_size: small  # Options: 'small', 'base', 'large'
+  model_size: large  # Options: 'small', 'base', 'large'
   inference_batch_size: 24  # Batch size for generating crops (all 25 crops at once on A100)
   inference_iters: 12  # GRU iterations
   inference_amp: true  # Float16 autocast for faster inference
@@ -81,7 +81,7 @@ foundationstereo:
 # Training optimization
 optimization:
   num_epochs: 90
-  executable_epochs: 90
+  executable_epochs: 6
   amp: false
   grad_clip_value: 0.1
   accumulation_steps: 2
@@ -100,8 +100,15 @@ optimization:
 # Loss function configuration
 loss:
   loss_weights:
-    disp_pred: 1.0
-    disp_4: 0.3
+    # Base regression losses (always enabled)
+    disp_pred: 1.0        # Final prediction loss (Smooth L1)
+    disp_4: 0.3           # Intermediate 1/4 resolution prediction loss
+    
+    # Extended loss components (0.0 = disabled)
+    # Recommended starting point: gradient=0.4, edge_smooth=0.1, second_order_smooth=0.05
+    gradient: 0.6        # Gradient matching: sharpens edges, matches GT disparity gradients
+    edge_smooth: 0.0      # Edge-aware smoothness: reduces noise in flat regions, preserves boundaries
+    second_order_smooth: 0.00  # Second-order smoothness: encourages planar surfaces, straightens long edges
 
 # Training mode
 training:
@@ -112,9 +119,9 @@ logging:
   wandb:
     project: lightstereo
     entity: null
-    run_name: presaved_pseudo_gt_IRS_256X512
+    run_name: presaved_pseudo_gt_IRS_256X512_with_extended_losses_g6e-1_e0_s0
     group: training_classic_02
-    tags: [presaved_pseudo_gt]
+    tags: []
   
   log_interval: 10
   save_interval: 1
