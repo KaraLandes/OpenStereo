@@ -81,7 +81,7 @@ foundationstereo:
 # Training optimization
 optimization:
   num_epochs: 90
-  executable_epochs: 6
+  executable_epochs: 90
   amp: false
   grad_clip_value: 0.1
   accumulation_steps: 2
@@ -101,14 +101,14 @@ optimization:
 loss:
   loss_weights:
     # Base regression losses (always enabled)
-    disp_pred: 1.0        # Final prediction loss (Smooth L1)
-    disp_4: 0.3           # Intermediate 1/4 resolution prediction loss
+    disp_pred: 0.3        # Final prediction loss (Smooth L1)
+    disp_4: 0.0           # Intermediate 1/4 resolution prediction loss
     
     # Extended loss components (0.0 = disabled)
     # Recommended starting point: gradient=0.4, edge_smooth=0.1, second_order_smooth=0.05
-    gradient: 0.6        # Gradient matching: sharpens edges, matches GT disparity gradients
-    edge_smooth: 0.2      # Edge-aware smoothness: reduces noise in flat regions, preserves boundaries
-    second_order_smooth: 0.00  # Second-order smoothness: encourages planar surfaces, straightens long edges
+    gradient: 1.0       # Gradient matching: sharpens edges, matches GT disparity gradients
+    edge_smooth: 0.7      # Edge-aware smoothness: reduces noise in flat regions, preserves boundaries
+    second_order_smooth: 0.05  # Second-order smoothness: encourages planar surfaces, straightens long edges
 
 # Training mode
 training:
@@ -119,8 +119,8 @@ logging:
   wandb:
     project: lightstereo
     entity: null
-    run_name: presaved_pseudo_gt_IRS_256X512_with_extended_losses_g6e-1_e2e-1_s0
-    group: training_classic_02
+    run_name: finetune_from_classic_IRS_256x512_extra_losses_g1_e7e-1_s5e-2
+    group: finetune_00
     tags: []
   
   log_interval: 10

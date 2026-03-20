@@ -15,6 +15,7 @@ from .postprocessing_dataset import PostprocessingDataset
 from .collate import sequential_collate_fn
 from .transforms import build_transforms, Compose
 from .presaved_pseudo_dataset import PresavedPseudoGTDataset
+from .sequential_presaved_dataset import SequentialPresavedDataset
 
 # Import discovery strategies to populate registry
 # This must happen after DatasetRegistry is imported

@@ -27,6 +27,7 @@ from dai.datasets import (
     CombinedStereoDataset,
     PostprocessingDataset,
     PresavedPseudoGTDataset,
+    SequentialPresavedDataset,
     build_transforms,
     sequential_collate_fn
 )
@@ -138,37 +139,62 @@ class DAIPipeline:
         Returns:
             Dataset instance
         """
+        # Create base dataset
         if dataset_name == 'sceneflow':
             base_dataset = SceneFlowDataset(samples, config, split)
-            
-            # Wrap with sequential dataset if enabled
-            sequential_config = config.get('sequential', {})
-            if sequential_config.get('enabled', False):
-                sequence_length = sequential_config.get('sequence_length', 4)
-                stride = sequential_config.get('stride', 1)
-                skip_incomplete = sequential_config.get('skip_incomplete', True)
-                
-                logger.info(
-                    f"Wrapping {dataset_name} with SequentialSceneFlowDataset "
-                    f"(seq_len={sequence_length}, stride={stride})"
-                )
-                
-                return SequentialSceneFlowDataset(
-                    base_dataset,
-                    sequence_length=sequence_length,
-                    stride=stride,
-                    skip_incomplete=skip_incomplete
-                )
-            else:
-                return base_dataset
         elif dataset_name == 'kitti12':
-            return KITTI12Dataset(samples, config, split)
+            base_dataset = KITTI12Dataset(samples, config, split)
         elif dataset_name == 'kitti15':
-            return KITTI15Dataset(samples, config, split)
+            base_dataset = KITTI15Dataset(samples, config, split)
         elif dataset_name == 'irs':
-            return IRSDataset(samples, config, split)
+            base_dataset = IRSDataset(samples, config, split)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
+        
+        # Wrap with sequential dataset if enabled (works for any dataset)
+        sequential_config = config.get('sequential', {})
+        if sequential_config.get('enabled', False):
+            sequence_length = sequential_config.get('sequence_length', 4)
+            stride = sequential_config.get('stride', 1)
+            skip_incomplete = sequential_config.get('skip_incomplete', True)
+            
+            logger.info(
+                f"Wrapping {dataset_name} with SequentialSceneFlowDataset "
+                f"(seq_len={sequence_length}, stride={stride})"
+            )
+            
+            return SequentialSceneFlowDataset(
+                base_dataset,
+                sequence_length=sequence_length,
+                stride=stride,
+                skip_incomplete=skip_incomplete
+            )
+        else:
+            return base_dataset
+    
+    def _wrap_dataset(self, datasets, transforms, use_presaved, is_sequential, resize_size):
+        """
+        Wrap dataset(s) with the appropriate transform and presaved pipeline.
+        
+        Three modes:
+        1. Sequential + presaved: SequentialPresavedDataset (handles transforms + presaved)
+        2. Non-sequential + presaved: PresavedPseudoGTDataset (handles transforms + presaved)
+        3. Neither: PostprocessingDataset (handles transforms only)
+        """
+        if len(datasets) == 0:
+            return None
+        
+        base = CombinedStereoDataset(datasets) if len(datasets) > 1 else datasets[0]
+        
+        if is_sequential and use_presaved:
+            # Sequential + presaved: single wrapper handles both
+            return SequentialPresavedDataset(base, transforms, resize_size)
+        elif use_presaved:
+            # Non-sequential presaved
+            return PresavedPseudoGTDataset(base, transforms, resize_size)
+        else:
+            # Standard: just apply transforms
+            return PostprocessingDataset(base, transforms)
     
     def combine_datasets(self):
         """Combine multiple datasets and apply transforms."""
@@ -181,57 +207,28 @@ class DAIPipeline:
         
         # Check if any dataset uses presaved mode
         use_presaved = any(
-            ds.target_source == 'pseudo-foundationstereo-presaved' 
+            getattr(ds, 'target_source', '') == 'pseudo-foundationstereo-presaved' 
+            for ds in self.train_datasets + self.val_datasets + self.test_datasets
+        )
+        
+        # Check if using sequential training
+        is_sequential = any(
+            isinstance(ds, SequentialSceneFlowDataset)
             for ds in self.train_datasets + self.val_datasets + self.test_datasets
         )
         
         # Get resize size for presaved wrapper (from transforms config)
         resize_size = self._get_resize_size_from_transforms(transform_config, 'train')
         
-        # Combine and wrap train datasets
-        if len(self.train_datasets) > 1:
-            combined = CombinedStereoDataset(self.train_datasets)
-            wrapped = PostprocessingDataset(combined, train_transforms)
-        elif len(self.train_datasets) == 1:
-            wrapped = PostprocessingDataset(self.train_datasets[0], train_transforms)
-        else:
-            wrapped = None
-        
-        # Apply presaved wrapper if needed
-        if wrapped and use_presaved:
-            self.combined_train = PresavedPseudoGTDataset(wrapped.base_dataset, train_transforms, resize_size)
-        else:
-            self.combined_train = wrapped
-        
-        # Combine and wrap val datasets
-        if len(self.val_datasets) > 1:
-            combined = CombinedStereoDataset(self.val_datasets)
-            wrapped = PostprocessingDataset(combined, val_transforms)
-        elif len(self.val_datasets) == 1:
-            wrapped = PostprocessingDataset(self.val_datasets[0], val_transforms)
-        else:
-            wrapped = None
-        
-        # Apply presaved wrapper if needed
-        if wrapped and use_presaved:
-            self.combined_val = PresavedPseudoGTDataset(wrapped.base_dataset, val_transforms, resize_size)
-        else:
-            self.combined_val = wrapped
-        
-        # Combine and wrap test datasets
-        if len(self.test_datasets) > 1:
-            combined = CombinedStereoDataset(self.test_datasets)
-            wrapped = PostprocessingDataset(combined, test_transforms)
-        elif len(self.test_datasets) == 1:
-            wrapped = PostprocessingDataset(self.test_datasets[0], test_transforms)
-        else:
-            wrapped = None
-        
-        # Apply presaved wrapper if needed
-        if wrapped and use_presaved:
-            self.combined_test = PresavedPseudoGTDataset(wrapped.base_dataset, test_transforms, resize_size)
-        else:
-            self.combined_test = wrapped
+        self.combined_train = self._wrap_dataset(
+            self.train_datasets, train_transforms, use_presaved, is_sequential, resize_size
+        )
+        self.combined_val = self._wrap_dataset(
+            self.val_datasets, val_transforms, use_presaved, is_sequential, resize_size
+        )
+        self.combined_test = self._wrap_dataset(
+            self.test_datasets, test_transforms, use_presaved, is_sequential, resize_size
+        )
     
     def _get_resize_size_from_transforms(self, transform_config: dict, split: str) -> list:
         """Extract resize dimensions from transform config."""
@@ -344,7 +341,7 @@ class DAIPipeline:
             logger.error(f"Data setup failed: {e}")
             return False
     
-    def setup_trainer(self, resume_checkpoint: str = None):
+    def setup_trainer(self, resume_checkpoint: str = None, pretrained_path: str = None):
         """Initialize trainer with data loaders."""
         logger.info("Initializing trainer...")
         
@@ -362,8 +359,11 @@ class DAIPipeline:
         if resume_checkpoint:
             logger.info(f"Resuming from {resume_checkpoint}")
             self.trainer.load_checkpoint(Path(resume_checkpoint))
+        elif pretrained_path:
+            logger.info(f"Loading pretrained model from {pretrained_path} (fine-tuning mode)")
+            self.trainer.load_pretrained(Path(pretrained_path))
     
-    def train(self, resume_checkpoint: str = None):
+    def train(self, resume_checkpoint: str = None, pretrained_path: str = None):
         """Run the full training pipeline."""
         logger.info("="*80)
         logger.info("DAI Training Pipeline")
@@ -374,7 +374,7 @@ class DAIPipeline:
             return False
         
         # Setup trainer
-        self.setup_trainer(resume_checkpoint)
+        self.setup_trainer(resume_checkpoint, pretrained_path)
         
         # Train
         num_epochs = self.config.get('optimization', {}).get('num_epochs', 90)
@@ -400,6 +400,7 @@ def main():
     # parser.add_argument('--config', type=str, default='dai/configs/stereo_flow.yaml', help='Path to config YAML')
     parser.add_argument('--config', type=str, default='dai/configs/temporal_stereo_flow.yaml', help='Path to config YAML')
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--pretrained', type=str, default=None, help='Path to pretrained model for fine-tuning (resets optimizer/scheduler)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda or cpu)')
     
     # Parse known args to allow WandB sweep to pass additional parameters
@@ -447,7 +448,7 @@ def main():
             config_ref[keys[-1]] = value
             logger.info(f"  {key} = {value}")
     
-    success = pipeline.train(resume_checkpoint=args.resume)
+    success = pipeline.train(resume_checkpoint=args.resume, pretrained_path=args.pretrained)
     
     if not success:
         sys.exit(1)

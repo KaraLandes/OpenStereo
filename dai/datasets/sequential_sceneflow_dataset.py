@@ -42,6 +42,9 @@ class SequentialSceneFlowDataset(Dataset):
         self.stride = stride
         self.skip_incomplete = skip_incomplete
         
+        # Expose base dataset attributes for pipeline compatibility
+        self.target_source = getattr(base_dataset, 'target_source', 'provided')
+        
         # Group samples by scene to create sequences
         self.sequences = self._create_sequences()
         

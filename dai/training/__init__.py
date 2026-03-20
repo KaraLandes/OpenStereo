@@ -24,7 +24,18 @@ def build_trainer(config, train_loader, val_loader=None, device='cuda'):
     Returns:
         Trainer instance
     """
-    # Check if any dataset uses online or presaved pseudo GT generation
+    # Check training mode first (takes priority over data source)
+    mode = config.get('training', {}).get('mode', 'normal')
+    
+    if mode == 'sequential_warped_disparity':
+        # Temporal with disparity warping (works with any data source)
+        return WarpingSequentialTrainer(config, train_loader, val_loader, device)
+    
+    elif mode in ['sequential', 'sequential_fused_features']:
+        # Temporal with feature fusion
+        return SequentialTrainer(config, train_loader, val_loader, device)
+    
+    # For non-sequential modes, check data source for trainer selection
     datasets_config = config.get('datasets', [])
     uses_online_pseudo = any(
         ds.get('target_source') == 'pseudo-foundationstereo-online' 
@@ -43,20 +54,9 @@ def build_trainer(config, train_loader, val_loader=None, device='cuda'):
         # Online pseudo ground truth generation with FoundationStereo
         return OnlinePseudoGTTrainer(config, train_loader, val_loader, device)
     
-    # Standard mode detection
-    mode = config.get('training', {}).get('mode', 'normal')
-    
     if mode == 'normal':
         # Standard single-frame training
         return DAITrainer(config, train_loader, val_loader, device)
-    
-    elif mode in ['sequential', 'sequential_fused_features']:
-        # Temporal with feature fusion (current implementation)
-        return SequentialTrainer(config, train_loader, val_loader, device)
-    
-    elif mode == 'sequential_warped_disparity':
-        # Temporal with disparity warping (new implementation)
-        return WarpingSequentialTrainer(config, train_loader, val_loader, device)
     
     else:
         raise ValueError(

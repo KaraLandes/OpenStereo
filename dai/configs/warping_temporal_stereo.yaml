@@ -1,24 +1,33 @@
 # Warping Temporal Stereo Configuration
 # Sequential training with disparity warping and optical flow
+# 
+# KEY FEATURES:
+# - Left-only temporal information (right image gets zero temporal channels)
+# - Fixed flow normalization scale (10.0 pixels)
+# - Correct align_corners=False for warping
+# - Sequence-aware RandomCrop (same crop across all frames)
+# - Frame 0 initialization with FoundationStereo or GT disparity
 
 seed: 28
 
 datasets:
-  - name: sceneflow
-    root: ./src_data/sceneflow
+  - name: irs
+    root: ./src_data/IRS
     subsets:
-      - monkaa
-      - driving
-      - flyingthings3d
-    pass_type: cleanpass
-    resolution: null
-    target_source: pseudo-foundationstereo
+      - Home_1
+      - Home_2
+      - Office_1
+      - Office_2
+      - Restaurant
+      - Store
+    resolution: null  # Native 540x960
+    target_source: pseudo-foundationstereo-presaved  # Use presaved pseudo-GT disparities
     return_right_disp: false
     
     sequential:
       enabled: true
-      sequence_length: 6
-      stride: 3
+      sequence_length: 40  # 40 frames per sequence (optimized for 40GB CUDA with bs=12)
+      stride: 10           # 50% overlap between sequences
       skip_incomplete: true
 
 splitter:
@@ -36,49 +45,54 @@ splitter:
 
 transforms:
   train:
-    - {name: RandomCrop, size: [320, 736]}
+    - {name: RandomCrop, size: [384, 768]}  # IRS native resolution 540x960
+    - {name: Resize, size: [256, 512]}      # Resize to training resolution
     - {name: ToTensor}
     - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
   
   val:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
     - {name: RightBottomPad, divisor: 32}
     - {name: ToTensor}
     - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
   
   test:
+    - {name: RandomCrop, size: [384, 768]}
+    - {name: Resize, size: [256, 512]}
     - {name: RightBottomPad, divisor: 32}
     - {name: ToTensor}
     - {name: NormalizeImage, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
 
 dataloader:
-  batch_size: 2
+  batch_size: 1  # 12 sequences in parallel
   num_workers: 12
   shuffle: true
   pin_memory: true
   drop_last: true
   persistent_workers: true
-  prefetch_factor: 12
+  prefetch_factor: 1  # Low prefetch for large batches to avoid memory issues
 
 model:
   name: WarpingLightStereo
   variant: S
-  max_disp: 192
+  max_disp: 300  # IRS has larger disparities (baseline=0.1m, focal=480px)
   left_att: true
   aggregation_blocks: [1, 2, 4]
   expanse_ratio: 4
   backbone: MobileNetv2
   
   temporal:
-    use_motion_hints: true
-    flow_max_displacement: 4
-    flow_feature_channels: 16
+    use_motion_hints: true  # Include flow as motion hints (6-channel input)
+    flow_max_displacement: 4  # Search ±4 pixels for optical flow
+    flow_feature_channels: 16  # Lightweight flow estimator (16 channels)
 
 optimization:
   num_epochs: 90
   executable_epochs: 90
   amp: true
   grad_clip_value: 0.15
-  accumulation_steps: 1  # Gradient accumulation: effective_batch_size = batch_size × accumulation_steps
+  accumulation_steps: 6  # Gradient accumulation: effective_batch_size = batch_size × accumulation_steps
   
   optimizer:
     name: AdamW
@@ -93,25 +107,32 @@ optimization:
 
 loss:
   loss_weights:
-    disp_pred: 1.0
-    disp_4: 0.3
-    temporal_consistency: 0.1
+    disp_pred: 1.0  # Main disparity loss
+    disp_4: 0.3     # Intermediate 1/4 resolution loss
+    temporal_consistency: 0.15  # Temporal smoothness (increased for long sequences)
+    
+    # Edge-aware and surface smoothness (critical for warping!)
+    gradient: 0.5              # Edge-aware smoothness - preserves boundaries during warping
+    second_order_smooth: 0.05  # Surface smoothness - reduces temporal jitter
+    
+    # Optional (disabled by default)
+    edge_smooth: 0.0  # Alternative edge-aware loss
 
 training:
   mode: sequential_warped_disparity
+  use_frame0_init: true  # Use FoundationStereo/GT for frame 0 (set false for zero-init)
 
 logging:
   wandb:
     project: lightstereo
     entity: null
-    run_name: null
-    group: null
-    tags: [sceneflow, warping-temporal-lightstereo, disparity-warping]
+    run_name: warping_temporal_irs_256512
+    group: warping_temporal_00
+    tags: []
   
-  log_interval: 250
-  save_interval: 10
+  log_interval: 50
+  save_interval: 5
 
 checkpoints:
-  save_dir: src_data/warping_temporal_lightstereo_training/testing
-  save_best: true
-  save_periodic: false
+  save_dir: src_data/warping_temporal_lightstereo_training/warping_temporal
+  save_periodic: true

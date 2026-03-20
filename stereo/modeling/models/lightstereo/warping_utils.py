@@ -8,28 +8,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def normalize_flow_median(flow, percentile=50.0):
+def normalize_flow_fixed(flow, scale=10.0):
     """
-    Normalize flow using median (50th percentile) to handle outliers.
-    Robust to extreme values while preserving typical motion patterns.
+    Normalize flow using a fixed scale parameter.
+    Preserves absolute motion magnitude information.
     
     Args:
         flow: [B, 2, H, W] - optical flow (flow_x, flow_y)
-        percentile: Percentile to use for normalization (default: 50 = median)
+        scale: Fixed normalization scale (default: 10.0 pixels)
+               Typical motion of 10px will normalize to 1.0
     
     Returns:
-        normalized_flow: [B, 2, H, W] - normalized to approximately [-1, 1]
+        normalized_flow: [B, 2, H, W] - normalized by fixed scale
     """
-    # Compute magnitude
-    magnitude = torch.sqrt(flow[:, 0]**2 + flow[:, 1]**2)  # [B, H, W]
-    
-    # Get median magnitude (robust to outliers)
-    median_magnitude = torch.quantile(magnitude.flatten(), percentile / 100.0)
-    median_magnitude = torch.clamp(median_magnitude, min=1.0)  # Avoid division by zero
-    
-    # Normalize by median and clamp to [-1, 1]
-    normalized_flow = flow / median_magnitude
-    normalized_flow = torch.clamp(normalized_flow, -1.0, 1.0)
+    # Normalize by fixed scale (no clamping to preserve large motions)
+    normalized_flow = flow / scale
     
     return normalized_flow
 
@@ -73,9 +66,10 @@ class DisparityWarper(nn.Module):
         # Apply flow to grid
         warped_grid = grid + flow  # [B, 2, H, W]
         
-        # Normalize to [-1, 1] for grid_sample
-        warped_grid[:, 0] = 2.0 * warped_grid[:, 0] / (W - 1) - 1.0  # x
-        warped_grid[:, 1] = 2.0 * warped_grid[:, 1] / (H - 1) - 1.0  # y
+        # Normalize to [-1, 1] for grid_sample with align_corners=False
+        # align_corners=False: grid [-1, 1] maps to pixel centers
+        warped_grid[:, 0] = 2.0 * (warped_grid[:, 0] + 0.5) / W - 1.0  # x
+        warped_grid[:, 1] = 2.0 * (warped_grid[:, 1] + 0.5) / H - 1.0  # y
         
         # Permute to [B, H, W, 2] for grid_sample
         warped_grid = warped_grid.permute(0, 2, 3, 1)
@@ -86,7 +80,7 @@ class DisparityWarper(nn.Module):
             warped_grid,
             mode='bilinear', 
             padding_mode=padding_mode, 
-            align_corners=True
+            align_corners=False
         )
         
         # Compute valid mask (pixels that came from within the frame)
@@ -96,14 +90,14 @@ class DisparityWarper(nn.Module):
             warped_grid,
             mode='bilinear', 
             padding_mode='zeros',  # Use zeros for mask to detect out-of-frame
-            align_corners=True
+            align_corners=False
         )
         valid_mask = (valid_mask > 0.9999).float()  # Threshold to binary mask
         
         return warped_disparity, valid_mask
 
 
-def prepare_frame_input(rgb, disparity, flow, use_motion_hints=True):
+def prepare_frame_input(rgb, disparity, flow, use_motion_hints=True, flow_scale=10.0):
     """
     Prepare input tensor for warping model.
     
@@ -112,13 +106,14 @@ def prepare_frame_input(rgb, disparity, flow, use_motion_hints=True):
         disparity: [B, 1, H, W] - disparity map (GT for frame 0, warped for frame t>0)
         flow: [B, 2, H, W] - optical flow (zero for frame 0, computed for frame t>0)
         use_motion_hints: Whether to include normalized flow as motion hints
+        flow_scale: Fixed scale for flow normalization (default: 10.0 pixels)
     
     Returns:
         input_tensor: [B, 6, H, W] if use_motion_hints else [B, 4, H, W]
     """
     if use_motion_hints:
-        # Normalize flow using median
-        normalized_flow = normalize_flow_median(flow, percentile=50.0)
+        # Normalize flow using fixed scale
+        normalized_flow = normalize_flow_fixed(flow, scale=flow_scale)
         
         # Concatenate: RGB (3) + disparity (1) + normalized flow (2)
         input_tensor = torch.cat([rgb, disparity, normalized_flow], dim=1)

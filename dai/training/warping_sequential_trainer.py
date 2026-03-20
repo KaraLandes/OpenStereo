@@ -5,6 +5,7 @@ Implements training loop with optical flow computation and disparity warping.
 
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from torch.amp import autocast
 import logging
@@ -59,7 +60,178 @@ class WarpingSequentialTrainer(DAITrainer):
         if not hasattr(self, 'viz_sample_indices'):
             self.viz_sample_indices = [0, 1, 2]
         
+        # Frame 0 initialization setting
+        self.use_frame0_init = config.get('training', {}).get('use_frame0_init', True)
+        
+        # Check if using presaved pseudo-GT (need generation for cache misses)
+        self._uses_presaved = any(
+            ds.get('target_source') == 'pseudo-foundationstereo-presaved'
+            for ds in config.get('datasets', [])
+        )
+        
+        if self._uses_presaved:
+            self._init_foundation_stereo(config)
+            self._cache_hits = 0
+            self._cache_misses = 0
+        
         logger.info("Initialized WarpingSequentialTrainer for temporal stereo with disparity warping")
+        logger.info(f"Frame 0 initialization: {'enabled' if self.use_frame0_init else 'disabled (zero-init)'}")
+        if self._uses_presaved:
+            logger.info("Cache-or-generate mode: will generate pseudo-GT for cache misses")
+    
+    def _init_foundation_stereo(self, config):
+        """Load FoundationStereo model for cache-miss generation."""
+        from dai.training.online_pseudo_trainer import OnlinePseudoGTTrainer
+        
+        logger.info("Loading FoundationStereo for cache-miss generation...")
+        # Reuse the loading logic from OnlinePseudoGTTrainer
+        self.foundation_model, self.foundation_device = (
+            OnlinePseudoGTTrainer._load_foundation_stereo_model(self)
+        )
+        
+        fs_config = config.get('foundationstereo', {})
+        self.foundation_batch_size = fs_config.get('inference_batch_size', 1)
+        self.foundation_use_amp = fs_config.get('inference_amp', True)
+        self.foundation_iters = fs_config.get('inference_iters', 12)
+        
+        if hasattr(self.foundation_model, 'args'):
+            self.foundation_model.args.valid_iters = self.foundation_iters
+        
+        # Normalization constants for denormalization
+        self.norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        self.norm_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    
+    def _denormalize_images(self, images: torch.Tensor) -> torch.Tensor:
+        """Convert normalized images back to [0-255] range for FoundationStereo."""
+        mean = self.norm_mean.to(images.device)
+        std = self.norm_std.to(images.device)
+        return (images * std + mean) * 255.0
+    
+    def _generate_pseudo_gt(self, left_img: torch.Tensor, right_img: torch.Tensor) -> torch.Tensor:
+        """Generate pseudo GT disparity using FoundationStereo."""
+        from stereo.modeling.models.foundationstereo.core.foundation_stereo import normalize_image
+        from stereo.modeling.models.foundationstereo.core.utils.utils import InputPadder
+        
+        B = left_img.shape[0]
+        left_denorm = self._denormalize_images(left_img)
+        right_denorm = self._denormalize_images(right_img)
+        
+        if left_denorm.device != self.foundation_device:
+            left_denorm = left_denorm.to(self.foundation_device)
+            right_denorm = right_denorm.to(self.foundation_device)
+        
+        disp_list = []
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=self.foundation_use_amp):
+            for i in range(0, B, self.foundation_batch_size):
+                left_norm = normalize_image(left_denorm[i:i+self.foundation_batch_size])
+                right_norm = normalize_image(right_denorm[i:i+self.foundation_batch_size])
+                padder = InputPadder(left_norm.shape[-2:], divis_by=32, force_square=False)
+                left_pad, right_pad = padder.pad(left_norm, right_norm)
+                output = self.foundation_model({'left': left_pad, 'right': right_pad})
+                disp_pred = padder.unpad(output['disp_pred'])
+                disp_list.append(disp_pred.squeeze(1).float())
+            disp_pred = torch.cat(disp_list, dim=0)
+            if disp_pred.device != self.device:
+                disp_pred = disp_pred.to(self.device)
+        return disp_pred
+    
+    def _handle_frame_cache_miss(self, frame_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Check frame for cache misses and generate + save missing disparities.
+        Works on batched frame data (all samples at timestep t).
+        """
+        if not self._uses_presaved:
+            return frame_data
+        
+        needs_gen = frame_data.get('needs_generation', None)
+        if needs_gen is None:
+            return frame_data
+        
+        if not isinstance(needs_gen, torch.Tensor):
+            needs_gen = torch.tensor(needs_gen)
+        
+        num_misses = needs_gen.sum().item()
+        num_hits = (~needs_gen).sum().item()
+        self._cache_hits += num_hits
+        self._cache_misses += num_misses
+        
+        if num_misses == 0:
+            return frame_data
+        
+        gen_indices = needs_gen.nonzero(as_tuple=True)[0]
+        
+        # Generate pseudo GT for missing samples
+        left_subset = frame_data['left'][gen_indices].to(self.device)
+        right_subset = frame_data['right'][gen_indices].to(self.device)
+        
+        try:
+            pseudo_gt = self._generate_pseudo_gt(left_subset, right_subset)
+            
+            # Fill in generated disparities
+            frame_data['disparity'][gen_indices] = pseudo_gt.cpu()
+            frame_data['disparity_foundationstereo'] = frame_data.get(
+                'disparity_foundationstereo', frame_data['disparity'].clone()
+            )
+            if frame_data['disparity_foundationstereo'] is not None:
+                frame_data['disparity_foundationstereo'][gen_indices] = pseudo_gt.cpu()
+            else:
+                frame_data['disparity_foundationstereo'] = frame_data['disparity'].clone()
+                frame_data['disparity_foundationstereo'][gen_indices] = pseudo_gt.cpu()
+            frame_data['valid_mask'][gen_indices] = (pseudo_gt.cpu() > 0) & (pseudo_gt.cpu() < 512)
+            frame_data['needs_generation'] = torch.zeros_like(needs_gen)
+            
+            # Save for future cache hits
+            self._save_frame_disparities(frame_data, gen_indices, pseudo_gt)
+            
+        except torch.cuda.OutOfMemoryError:
+            logger.warning("OOM during FoundationStereo generation, skipping cache miss")
+            torch.cuda.empty_cache()
+        except Exception as e:
+            logger.error(f"Failed to generate pseudo GT: {e}")
+        
+        return frame_data
+    
+    def _save_frame_disparities(self, frame_data, gen_indices, pseudo_gt):
+        """Save generated disparities to disk as .npy files."""
+        metadata = frame_data.get('metadata', None)
+        crop_coords = frame_data.get('crop_coords', None)
+        
+        if metadata is None or crop_coords is None:
+            return
+        
+        for i, batch_idx in enumerate(gen_indices):
+            idx = batch_idx.item()
+            try:
+                # metadata is a list of dicts (one per batch item)
+                if isinstance(metadata, list) and idx < len(metadata):
+                    frame_id = metadata[idx].get('frame_id', '00000')
+                    left_path = metadata[idx].get('left_path', None)
+                else:
+                    continue
+                
+                if left_path is None:
+                    continue
+                
+                # crop_coords is a list of dicts (one per batch item) from collate
+                if isinstance(crop_coords, list) and idx < len(crop_coords):
+                    cc = crop_coords[idx]
+                    if isinstance(cc, dict):
+                        y = cc.get('y', 0)
+                        x = cc.get('x', 0)
+                    else:
+                        continue
+                else:
+                    continue
+                
+                scene_dir = Path(left_path).parent
+                presaved_path = scene_dir / f"pseudo_d_{y}_{x}_{frame_id}.npy"
+                
+                disp_np = pseudo_gt[i].cpu().numpy().astype(np.float16)
+                np.save(str(presaved_path), disp_np)
+                logger.debug(f"Saved generated disparity: {presaved_path}")
+                
+            except Exception as e:
+                logger.error(f"Failed to save disparity for idx {idx}: {e}")
     
     def _save_visualizations(self, save_dir: Path, epoch: int, prefix: str = 'train'):
         """
@@ -212,65 +384,79 @@ class WarpingSequentialTrainer(DAITrainer):
             sequence_length = len(sequence)
             batch_size = sequence[0]['left'].shape[0]
             
-            # Frame 0: Use GT disparity with zero flow
-            first_frame = sequence[0]
-            if 'disparity_foundationstereo' in first_frame and first_frame['disparity_foundationstereo'] is not None:
-                gt_disparity = first_frame['disparity_foundationstereo'].to(self.device)
-                if gt_disparity.dim() == 3:
-                    gt_disparity = gt_disparity.unsqueeze(1)  # [B, H, W] -> [B, 1, H, W]
-            elif 'disparity' in first_frame and first_frame['disparity'] is not None:
-                gt_disparity = first_frame['disparity'].to(self.device)
-                if gt_disparity.dim() == 3:
-                    gt_disparity = gt_disparity.unsqueeze(1)  # [B, H, W] -> [B, 1, H, W]
+            # Handle cache misses for first frame before init
+            first_frame = self._handle_frame_cache_miss(sequence[0])
+            sequence[0] = first_frame
+            
+            B, _, H, W = first_frame['left'].shape
+            
+            if self.use_frame0_init:
+                # Use GT or FoundationStereo disparity for initialization
+                if 'disparity_foundationstereo' in first_frame and first_frame['disparity_foundationstereo'] is not None:
+                    gt_disparity = first_frame['disparity_foundationstereo'].to(self.device)
+                    if gt_disparity.dim() == 3:
+                        gt_disparity = gt_disparity.unsqueeze(1)
+                elif 'disparity' in first_frame and first_frame['disparity'] is not None:
+                    gt_disparity = first_frame['disparity'].to(self.device)
+                    if gt_disparity.dim() == 3:
+                        gt_disparity = gt_disparity.unsqueeze(1)
+                else:
+                    gt_disparity = torch.zeros(B, 1, H, W, device=self.device)
             else:
-                B, _, H, W = first_frame['left'].shape
                 gt_disparity = torch.zeros(B, 1, H, W, device=self.device)
             
-            # Initialize previous disparity
             prev_disparity = gt_disparity
-            
-            # Store previous frame for flow computation
             prev_left = first_frame['left'].to(self.device)
-            prev_right = first_frame['right'].to(self.device)
             
             total_loss = 0.0
+            seq_epe = 0.0
+            seq_d1 = 0.0
             
             # Process each frame in the sequence
             for t, frame_data in enumerate(sequence):
+                # Handle cache misses: generate pseudo-GT if needed (frame 0 already handled)
+                if t > 0:
+                    frame_data = self._handle_frame_cache_miss(frame_data)
+                
                 left_rgb = frame_data['left'].to(self.device)
                 right_rgb = frame_data['right'].to(self.device)
                 disp_gt = frame_data['disparity'].to(self.device)
                 valid_mask = frame_data['valid_mask'].to(self.device)
                 
                 if t == 0:
-                    # Frame 0: Use GT disparity with zero flow
+                    # Frame 0: Use GT disparity for left, zeros for right
                     zero_flow = torch.zeros(batch_size, 2, left_rgb.shape[2], left_rgb.shape[3], device=self.device)
                     
                     left_input = prepare_frame_input(
                         left_rgb, gt_disparity, zero_flow,
                         use_motion_hints=self.model.use_motion_hints
                     )
+                    # Right: zero temporal information (consistent with t>0)
+                    zero_disp_right = torch.zeros_like(gt_disparity)
                     right_input = prepare_frame_input(
-                        right_rgb, gt_disparity, zero_flow,
+                        right_rgb, zero_disp_right, zero_flow,
                         use_motion_hints=self.model.use_motion_hints
                     )
                 else:
-                    # Frame t>0: Compute flow and warp disparity
+                    # Frame t>0: Compute flow and warp disparity (LEFT ONLY)
                     with torch.no_grad():
                         flow_left = self.model.flow_estimator(prev_left, left_rgb)
-                        flow_right = self.model.flow_estimator(prev_right, right_rgb)
                     
-                    # Warp previous disparity
+                    # Warp previous disparity (left side only)
                     warped_disp_left, mask_left = self.model.disparity_warper(prev_disparity, flow_left)
-                    warped_disp_right, mask_right = self.model.disparity_warper(prev_disparity, flow_right)
                     
-                    # Prepare 6-channel input
+                    # Prepare 6-channel input for left with temporal information
                     left_input = prepare_frame_input(
                         left_rgb, warped_disp_left, flow_left,
                         use_motion_hints=self.model.use_motion_hints
                     )
+                    
+                    # Right image: zero temporal information (no warping, no flow)
+                    # This maintains 6-channel input but with zeros for temporal channels
+                    zero_disp_right = torch.zeros_like(warped_disp_left)
+                    zero_flow_right = torch.zeros(batch_size, 2, left_rgb.shape[2], left_rgb.shape[3], device=self.device)
                     right_input = prepare_frame_input(
-                        right_rgb, warped_disp_right, flow_right,
+                        right_rgb, zero_disp_right, zero_flow_right,
                         use_motion_hints=self.model.use_motion_hints
                     )
                 
@@ -298,10 +484,17 @@ class WarpingSequentialTrainer(DAITrainer):
                 
                 total_loss += frame_loss
                 
+                # Per-frame metrics
+                with torch.no_grad():
+                    frame_metrics = self.metrics.compute_all_metrics(
+                        output['disp_pred'].squeeze(1), disp_gt, valid_mask
+                    )
+                    seq_epe += frame_metrics['epe']
+                    seq_d1 += frame_metrics['d1_all']
+                
                 # Update for next iteration
                 prev_disparity = output['disp_pred'].detach()
                 prev_left = left_rgb
-                prev_right = right_rgb
             
             # Average loss over sequence
             avg_loss = total_loss / sequence_length
@@ -325,26 +518,19 @@ class WarpingSequentialTrainer(DAITrainer):
                     if not sched_config.get('on_epoch', False):
                         self.scheduler.step()
             
-            # Compute metrics on last frame
-            with torch.no_grad():
-                last_frame = sequence[-1]
-                last_output = output
-                
-                disp_pred = last_output['disp_pred'].squeeze(1)
-                disp_gt = last_frame['disparity'].to(self.device)
-                valid_mask = last_frame['valid_mask'].to(self.device)
-                
-                metrics = self.metrics.compute_all_metrics(disp_pred, disp_gt, valid_mask)
+            # Average metrics over sequence
+            avg_epe = seq_epe / sequence_length
+            avg_d1 = seq_d1 / sequence_length
             
             epoch_metrics['loss'] += avg_loss.item() * self.accumulation_steps
-            epoch_metrics['epe'] += metrics['epe']
-            epoch_metrics['d1'] += metrics['d1_all']
+            epoch_metrics['epe'] += avg_epe
+            epoch_metrics['d1'] += avg_d1
             num_batches += 1
             
             progress_bar.set_postfix({
                 'loss': f"{avg_loss.item() * self.accumulation_steps:.4f}",
-                'epe': f"{metrics['epe']:.4f}",
-                'd1': f"{metrics['d1_all']:.4f}"
+                'epe': f"{avg_epe:.4f}",
+                'd1': f"{avg_d1:.4f}"
             })
             
             log_interval = self.config.get('logging', {}).get('log_interval', 250)
@@ -353,8 +539,8 @@ class WarpingSequentialTrainer(DAITrainer):
                     import wandb
                     wandb.log({
                         'train/loss': avg_loss.item() * self.accumulation_steps,
-                        'train/epe': metrics['epe'],
-                        'train/d1_all': metrics['d1_all'],
+                        'train/epe': avg_epe,
+                        'train/d1_all': avg_d1,
                         'train/lr': self.optimizer.param_groups[0]['lr'],
                         'epoch': epoch,
                         'step': self.global_step
@@ -412,43 +598,56 @@ class WarpingSequentialTrainer(DAITrainer):
             sequence_length = len(sequence)
             batch_size = sequence[0]['left'].shape[0]
             
-            first_frame = sequence[0]
+            # Handle cache misses for first frame before init
+            first_frame = self._handle_frame_cache_miss(sequence[0])
+            sequence[0] = first_frame
+            
             if 'disparity_foundationstereo' in first_frame and first_frame['disparity_foundationstereo'] is not None:
                 gt_disparity = first_frame['disparity_foundationstereo'].to(self.device)
                 if gt_disparity.dim() == 3:
-                    gt_disparity = gt_disparity.unsqueeze(1)  # [B, H, W] -> [B, 1, H, W]
+                    gt_disparity = gt_disparity.unsqueeze(1)
             else:
                 B, _, H, W = first_frame['left'].shape
                 gt_disparity = torch.zeros(B, 1, H, W, device=self.device)
             
             prev_disparity = gt_disparity
             prev_left = first_frame['left'].to(self.device)
-            prev_right = first_frame['right'].to(self.device)
             
             total_loss = 0.0
+            seq_epe = 0.0
+            seq_d1 = 0.0
             
             for t, frame_data in enumerate(sequence):
+                # Handle cache misses (frame 0 already handled)
+                if t > 0:
+                    frame_data = self._handle_frame_cache_miss(frame_data)
+                
                 left_rgb = frame_data['left'].to(self.device)
                 right_rgb = frame_data['right'].to(self.device)
                 disp_gt = frame_data['disparity'].to(self.device)
                 valid_mask = frame_data['valid_mask'].to(self.device)
                 
                 if t == 0:
+                    # Frame 0: Use GT disparity for left, zeros for right
                     zero_flow = torch.zeros(batch_size, 2, left_rgb.shape[2], left_rgb.shape[3], device=self.device)
                     left_input = prepare_frame_input(left_rgb, gt_disparity, zero_flow,
                                                     use_motion_hints=self.model.use_motion_hints)
-                    right_input = prepare_frame_input(right_rgb, gt_disparity, zero_flow,
+                    # Right: zero temporal information
+                    zero_disp_right = torch.zeros_like(gt_disparity)
+                    right_input = prepare_frame_input(right_rgb, zero_disp_right, zero_flow,
                                                      use_motion_hints=self.model.use_motion_hints)
                 else:
+                    # Frame t>0: LEFT ONLY temporal information
                     flow_left = self.model.flow_estimator(prev_left, left_rgb)
-                    flow_right = self.model.flow_estimator(prev_right, right_rgb)
-                    
                     warped_disp_left, _ = self.model.disparity_warper(prev_disparity, flow_left)
-                    warped_disp_right, _ = self.model.disparity_warper(prev_disparity, flow_right)
                     
                     left_input = prepare_frame_input(left_rgb, warped_disp_left, flow_left,
                                                     use_motion_hints=self.model.use_motion_hints)
-                    right_input = prepare_frame_input(right_rgb, warped_disp_right, flow_right,
+                    
+                    # Right: zero temporal information
+                    zero_disp_right = torch.zeros_like(warped_disp_left)
+                    zero_flow_right = torch.zeros(batch_size, 2, left_rgb.shape[2], left_rgb.shape[3], device=self.device)
+                    right_input = prepare_frame_input(right_rgb, zero_disp_right, zero_flow_right,
                                                      use_motion_hints=self.model.use_motion_hints)
                 
                 output = self.model({'left': left_input, 'right': right_input})
@@ -463,28 +662,30 @@ class WarpingSequentialTrainer(DAITrainer):
                 frame_loss, loss_dict = self.loss_fn(output, data_with_gt)
                 total_loss += frame_loss
                 
-                prev_disparity = output['disp_pred']
+                # Per-frame metrics
+                frame_metrics = self.metrics.compute_all_metrics(
+                    output['disp_pred'].squeeze(1), disp_gt, valid_mask
+                )
+                seq_epe += frame_metrics['epe']
+                seq_d1 += frame_metrics['d1_all']
+                
+                prev_disparity = output['disp_pred'].detach()
                 prev_left = left_rgb
-                prev_right = right_rgb
             
+            # Average over sequence
             avg_loss = total_loss / sequence_length
-            
-            last_frame = sequence[-1]
-            disp_pred = output['disp_pred'].squeeze(1)
-            disp_gt = last_frame['disparity'].to(self.device)
-            valid_mask = last_frame['valid_mask'].to(self.device)
-            
-            metrics = self.metrics.compute_all_metrics(disp_pred, disp_gt, valid_mask)
+            avg_epe = seq_epe / sequence_length
+            avg_d1 = seq_d1 / sequence_length
             
             val_metrics['loss'] += avg_loss.item()
-            val_metrics['epe'] += metrics['epe']
-            val_metrics['d1'] += metrics['d1_all']
+            val_metrics['epe'] += avg_epe
+            val_metrics['d1'] += avg_d1
             num_batches += 1
             
             progress_bar.set_postfix({
                 'loss': f"{avg_loss.item():.4f}",
-                'epe': f"{metrics['epe']:.4f}",
-                'd1': f"{metrics['d1_all']:.4f}"
+                'epe': f"{avg_epe:.4f}",
+                'd1': f"{avg_d1:.4f}"
             })
         
         for key in val_metrics:

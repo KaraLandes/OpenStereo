@@ -83,6 +83,9 @@ class PresavedPseudoGTDataset(Dataset):
                 # Replace the dummy disparity with presaved one
                 sample['disparity'] = presaved_disp
                 
+                # Also set as FoundationStereo disparity for frame 0 initialization
+                sample['disparity_foundationstereo'] = presaved_disp
+                
                 # Update valid mask based on presaved disparity
                 import torch
                 if isinstance(presaved_disp, torch.Tensor):

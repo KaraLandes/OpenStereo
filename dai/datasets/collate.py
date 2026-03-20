@@ -71,6 +71,17 @@ def sequential_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
                 batched_frame['disparity_foundationstereo'] = None
         else:
             batched_frame['disparity_foundationstereo'] = None
+        
+        # Include needs_generation flag for cache-or-generate mode
+        if 'needs_generation' in frames_at_t[0]:
+            batched_frame['needs_generation'] = torch.tensor(
+                [f.get('needs_generation', False) for f in frames_at_t], dtype=torch.bool
+            )
+        
+        # Include crop_coords for saving generated disparities
+        if 'crop_coords' in frames_at_t[0]:
+            batched_frame['crop_coords'] = [f.get('crop_coords') for f in frames_at_t]
+        
         batched_sequence.append(batched_frame)
 
     # Collect metadata

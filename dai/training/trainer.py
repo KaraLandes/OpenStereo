@@ -234,7 +234,8 @@ class DAITrainer:
             
             # Account for gradient accumulation: effective batch size = batch_size × accumulation_steps
             # Scheduler should see steps based on effective batches, not physical batches
-            steps_per_epoch = len(self.train_loader) // self.accumulation_steps
+            # Use ceiling division to match actual stepping behavior: (batch_idx + 1) % accumulation_steps == 0
+            steps_per_epoch = (len(self.train_loader) + self.accumulation_steps - 1) // self.accumulation_steps
             
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
@@ -419,9 +420,6 @@ class DAITrainer:
                 
                 # LR tracking: Log every 50 steps and at key warmup milestones
                 current_lr = self.optimizer.param_groups[0]['lr']
-                if (self.global_step % 50 == 0 or 
-                    self.global_step < 10 or 
-                    self.global_step in [1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1179, 1180]):
             
             # if t2:
             #     backward_time = time.time() - t2 - optim_time if 'optim_time' in locals() else 0
@@ -785,12 +783,34 @@ class DAITrainer:
         logger.info(f"Saved checkpoint to {path}")
     
     def load_checkpoint(self, path: Path):
-        """Load model checkpoint"""
+        """Load full checkpoint for resuming training (model + optimizer + scheduler state)"""
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if self.scheduler and checkpoint['scheduler_state_dict']:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Handle scheduler state: advance new scheduler to match checkpoint progress
+        if self.scheduler and checkpoint.get('scheduler_state_dict'):
+            old_last_epoch = checkpoint['scheduler_state_dict'].get('last_epoch', 0)
+            
+            # For OneCycleLR, check if old checkpoint exceeds new total_steps
+            if hasattr(self.scheduler, 'total_steps'):
+                new_total_steps = self.scheduler.total_steps
+                if old_last_epoch >= new_total_steps:
+                    logger.warning(f"Checkpoint step {old_last_epoch} >= new total_steps {new_total_steps}")
+                    logger.warning(f"Clamping to {new_total_steps - 1} to prevent scheduler overflow")
+                    old_last_epoch = new_total_steps - 1
+            
+            logger.info(f"Advancing scheduler to step {old_last_epoch} to match checkpoint progress")
+            for _ in range(old_last_epoch):
+                self.scheduler.step()
+        
         self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         self.current_epoch = checkpoint['epoch']
         logger.info(f"Loaded checkpoint from {path} (epoch {self.current_epoch})")
+    
+    def load_pretrained(self, path: Path):
+        """Load only model weights for fine-tuning (ignores optimizer/scheduler state)"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.current_epoch = 0  # Reset epoch counter for fresh training
+        logger.info(f"Loaded pretrained model from {path} (fine-tuning mode - optimizer/scheduler reset)")

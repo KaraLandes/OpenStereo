@@ -19,13 +19,55 @@ class Compose:
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         # Check if this is a sequential sample (has 'sequence' key)
         if 'sequence' in sample:
-            # Apply transforms to each frame in the sequence
+            # For sequential data, we need to apply spatial transforms consistently
+            # across all frames to preserve temporal correspondence
+            
+            # First, determine crop/spatial parameters from the first frame
+            first_frame = sample['sequence'][0]
+            
+            # Get image dimensions to sample crop coordinates once
+            if isinstance(first_frame['left'], np.ndarray):
+                h, w = first_frame['left'].shape[:2]
+            else:
+                _, h, w = first_frame['left'].shape
+            
+            # Sample crop coordinates once for the entire sequence
+            crop_coords = None
+            for transform in self.transforms:
+                if isinstance(transform, (RandomCrop, StridedRandomCrop)):
+                    # Sample crop coordinates
+                    if h >= transform.crop_h and w >= transform.crop_w:
+                        if isinstance(transform, RandomCrop):
+                            y = random.randint(0, h - transform.crop_h)
+                            x = random.randint(0, w - transform.crop_w)
+                        else:  # StridedRandomCrop
+                            max_y = h - transform.crop_h
+                            max_x = w - transform.crop_w
+                            y_positions = list(range(0, max_y + 1, transform.stride))
+                            x_positions = list(range(0, max_x + 1, transform.stride))
+                            if y_positions[-1] < max_y:
+                                y_positions.append(max_y)
+                            if x_positions[-1] < max_x:
+                                x_positions.append(max_x)
+                            y = random.choice(y_positions)
+                            x = random.choice(x_positions)
+                        crop_coords = (y, x)
+                    break
+            
+            # Apply transforms to each frame with consistent spatial parameters
             transformed_sequence = []
             for frame in sample['sequence']:
                 transformed_frame = frame
                 for transform in self.transforms:
-                    transformed_frame = transform(transformed_frame)
+                    if isinstance(transform, (RandomCrop, StridedRandomCrop)) and crop_coords is not None:
+                        # Apply the same crop to all frames
+                        y, x = crop_coords
+                        transformed_frame = transform._apply_crop(transformed_frame, y, x)
+                    else:
+                        # Apply other transforms normally
+                        transformed_frame = transform(transformed_frame)
                 transformed_sequence.append(transformed_frame)
+            
             sample['sequence'] = transformed_sequence
             return sample
         else:
@@ -84,6 +126,9 @@ class RandomCrop:
     """
     Random crop for stereo pairs.
     Crops left and right images at the same y position.
+    
+    For sequential data: applies the SAME crop to all frames in the sequence
+    to preserve temporal correspondence.
     """
     
     def __init__(self, size: List[int]):
@@ -92,6 +137,41 @@ class RandomCrop:
             size: [height, width] of crop
         """
         self.crop_h, self.crop_w = size
+    
+    def _apply_crop(self, sample: Dict[str, Any], y: int, x: int) -> Dict[str, Any]:
+        """Apply crop at specified coordinates to a single frame."""
+        # Store crop coordinates in metadata for presaved pseudo-GT loading
+        if 'crop_coords' not in sample:
+            sample['crop_coords'] = {}
+        sample['crop_coords']['y'] = y
+        sample['crop_coords']['x'] = x
+        
+        # Crop based on data type
+        if isinstance(sample['left'], np.ndarray):
+            # Numpy arrays: [H, W, C]
+            sample['left'] = sample['left'][y:y+self.crop_h, x:x+self.crop_w, :]
+            sample['right'] = sample['right'][y:y+self.crop_h, x:x+self.crop_w, :]
+            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
+            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+            
+            # Crop FoundationStereo disparity if present
+            if 'disparity_foundationstereo' in sample and sample['disparity_foundationstereo'] is not None:
+                sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][y:y+self.crop_h, x:x+self.crop_w]
+        else:
+            # Tensors: [C, H, W]
+            sample['left'] = sample['left'][:, y:y+self.crop_h, x:x+self.crop_w]
+            sample['right'] = sample['right'][:, y:y+self.crop_h, x:x+self.crop_w]
+            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
+            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+            
+            # Crop FoundationStereo disparity if present
+            if 'disparity_foundationstereo' in sample and sample['disparity_foundationstereo'] is not None:
+                if sample['disparity_foundationstereo'].dim() == 3:
+                    sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][:, y:y+self.crop_h, x:x+self.crop_w]
+                else:
+                    sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][y:y+self.crop_h, x:x+self.crop_w]
+        
+        return sample
     
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         # Handle both numpy arrays [H, W, C] and tensors [C, H, W]
@@ -106,10 +186,37 @@ class RandomCrop:
         if h < self.crop_h or w < self.crop_w:
             return sample
         
-        # Random crop position
+        # Random crop position (sampled once for all frames)
         y = random.randint(0, h - self.crop_h)
         x = random.randint(0, w - self.crop_w)
         
+        # Apply crop
+        return self._apply_crop(sample, y, x)
+
+
+class StridedRandomCrop:
+    """
+    Strided random crop for stereo pairs with grid-based positions.
+    Reduces storage requirements by limiting crop positions to a regular grid.
+    
+    Instead of fully random positions, crops are selected from a grid with
+    specified stride (e.g., stride=50 means positions: 0, 50, 100, 150, ...).
+    
+    For sequential data: applies the SAME crop to all frames in the sequence
+    to preserve temporal correspondence.
+    """
+    
+    def __init__(self, size: List[int], stride: int = 50):
+        """
+        Args:
+            size: [height, width] of crop
+            stride: Grid stride in pixels (default: 50)
+        """
+        self.crop_h, self.crop_w = size
+        self.stride = stride
+    
+    def _apply_crop(self, sample: Dict[str, Any], y: int, x: int) -> Dict[str, Any]:
+        """Apply crop at specified coordinates to a single frame."""
         # Store crop coordinates in metadata for presaved pseudo-GT loading
         if 'crop_coords' not in sample:
             sample['crop_coords'] = {}
@@ -123,33 +230,25 @@ class RandomCrop:
             sample['right'] = sample['right'][y:y+self.crop_h, x:x+self.crop_w, :]
             sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
             sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+            
+            # Crop FoundationStereo disparity if present
+            if 'disparity_foundationstereo' in sample and sample['disparity_foundationstereo'] is not None:
+                sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][y:y+self.crop_h, x:x+self.crop_w]
         else:
             # Tensors: [C, H, W]
             sample['left'] = sample['left'][:, y:y+self.crop_h, x:x+self.crop_w]
             sample['right'] = sample['right'][:, y:y+self.crop_h, x:x+self.crop_w]
             sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
             sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
+            
+            # Crop FoundationStereo disparity if present
+            if 'disparity_foundationstereo' in sample and sample['disparity_foundationstereo'] is not None:
+                if sample['disparity_foundationstereo'].dim() == 3:
+                    sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][:, y:y+self.crop_h, x:x+self.crop_w]
+                else:
+                    sample['disparity_foundationstereo'] = sample['disparity_foundationstereo'][y:y+self.crop_h, x:x+self.crop_w]
         
         return sample
-
-
-class StridedRandomCrop:
-    """
-    Strided random crop for stereo pairs with grid-based positions.
-    Reduces storage requirements by limiting crop positions to a regular grid.
-    
-    Instead of fully random positions, crops are selected from a grid with
-    specified stride (e.g., stride=50 means positions: 0, 50, 100, 150, ...).
-    """
-    
-    def __init__(self, size: List[int], stride: int = 50):
-        """
-        Args:
-            size: [height, width] of crop
-            stride: Grid stride in pixels (default: 50)
-        """
-        self.crop_h, self.crop_w = size
-        self.stride = stride
     
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         # Handle both numpy arrays [H, W, C] and tensors [C, H, W]
@@ -181,27 +280,8 @@ class StridedRandomCrop:
         y = random.choice(y_positions)
         x = random.choice(x_positions)
         
-        # Store crop coordinates in metadata for presaved pseudo-GT loading
-        if 'crop_coords' not in sample:
-            sample['crop_coords'] = {}
-        sample['crop_coords']['y'] = y
-        sample['crop_coords']['x'] = x
-        
-        # Crop based on data type
-        if isinstance(sample['left'], np.ndarray):
-            # Numpy arrays: [H, W, C]
-            sample['left'] = sample['left'][y:y+self.crop_h, x:x+self.crop_w, :]
-            sample['right'] = sample['right'][y:y+self.crop_h, x:x+self.crop_w, :]
-            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
-            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
-        else:
-            # Tensors: [C, H, W]
-            sample['left'] = sample['left'][:, y:y+self.crop_h, x:x+self.crop_w]
-            sample['right'] = sample['right'][:, y:y+self.crop_h, x:x+self.crop_w]
-            sample['disparity'] = sample['disparity'][y:y+self.crop_h, x:x+self.crop_w]
-            sample['valid_mask'] = sample['valid_mask'][y:y+self.crop_h, x:x+self.crop_w]
-        
-        return sample
+        # Apply crop
+        return self._apply_crop(sample, y, x)
 
 
 class StereoColorJitter:
